@@ -1904,12 +1904,14 @@ fn draw_menu(f: &mut Frame, sel: usize, page: Page) {
     let h = (PAGES.len() as u16 + 9).min(area.height.saturating_sub(2));
     let r = Rect { x: area.x + area.width.saturating_sub(w) / 2, y: area.y + area.height.saturating_sub(h) / 2, width: w, height: h };
     f.render_widget(ratatui::widgets::Clear, r);
+    // the name column fits the longest name plus two spaces, so a new page's name never runs into its line
+    let nw = PAGES.iter().map(|(_, _, name, _)| name.chars().count()).max().unwrap_or(0) + 2;
     let mut lines = vec![Line::from("")];
     for (i, (pg, key, name, what)) in PAGES.iter().enumerate() {
         let here = if *pg == page { "  ◆ here" } else { "" };
         lines.push(if i == sel {
             let st = Style::new().fg(p.bg).bg(p.feed).add_modifier(Modifier::BOLD);
-            let row = format!(" ▸ {key}  {name:<14}{what}{here}");
+            let row = format!(" ▸ {key}  {name:<nw$}{what}{here}");
             Line::from(vec![Span::raw(" "), Span::styled(format!("{row:<width$}", width = (w as usize).saturating_sub(4)), st)])
         } else {
             Line::from(vec![
@@ -1917,7 +1919,7 @@ fn draw_menu(f: &mut Frame, sel: usize, page: Page) {
                 Span::raw("   "),
                 bold(key.to_string(), p.gold),
                 Span::raw("  "),
-                bold(format!("{name:<14}"), p.ink),
+                bold(format!("{name:<nw$}"), p.ink),
                 dim(what.to_string()),
                 bold(here.to_string(), p.violet),
             ])

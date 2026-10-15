@@ -23,9 +23,10 @@
 //!                                      --fps F records F frames a second while the data is read every S
 //!   --page NAME                        start --once / --record (or the live screen) on a page: independence,
 //!                                      receipts, system, network, governance or deploys
+//!   --menu                             --once / --record with the menu (key m) open over the page
 //!   --basic                            16 colours instead of 24-bit (old terminals)
-//!   keys: q quit · p pause · 1 the main screen · i INDEPENDENCE · r RECEIPTS · s SYSTEM · n NETWORK · g GOVERNANCE
-//!         · d DEPLOYS · Tab the next page
+//!   keys: q quit · m the menu (every page, its key and what it shows) · Tab the next page · p pause; each page's
+//!         key opens it directly: 1 main · i independence · r receipts · s system · n network · g governance · d deploys
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -1054,7 +1055,29 @@ enum Page {
     Deploys,
 }
 
+/// Every page in the menu's order: the key that opens it, its name, and a line on what it shows.
+const PAGES: [(Page, char, &str, &str); 7] = [
+    (Page::Main, '1', "Main", "the ledger tape, who writes the ledger, signing, the engine"),
+    (Page::Independence, 'i', "Independence", "the road to a validator that needs no one else"),
+    (Page::Receipts, 'r', "Receipts", "every difference since the validator started, fixed or open"),
+    (Page::System, 's', "System", "m3060 and the validator process, and .39 that feeds it"),
+    (Page::Network, 'n', "Network", "peers, the upstream, consensus, how the world sees us"),
+    (Page::Governance, 'g', "Governance", "amendments: majorities, votes, what we are ready for"),
+    (Page::Deploys, 'd', "Deploys", "what is live, the soak, the next cycle, what waits on you"),
+];
+
+/// The page on screen, for the footer (set by `draw`).
+static PAGE_NOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Page {
+    /// Its place in PAGES.
+    fn index(self) -> usize {
+        PAGES.iter().position(|e| e.0 == self).unwrap_or(0)
+    }
+    /// The page a key opens (either case), if any.
+    fn from_key(c: char) -> Option<Page> {
+        PAGES.iter().find(|e| e.1 == c.to_ascii_lowercase()).map(|e| e.0)
+    }
     fn from_arg(a: Option<&str>) -> Page {
         match a {
             Some("independence") => Page::Independence,
@@ -1081,6 +1104,7 @@ impl Page {
 }
 
 fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
+    PAGE_NOW.store(page.index(), std::sync::atomic::Ordering::Relaxed);
     match page {
         Page::Independence => return independence::draw(f, g, paused),
         Page::Receipts => return receipts::draw(f, g, paused),
@@ -1848,7 +1872,12 @@ fn draw_ledger_mix(f: &mut Frame, r: Rect, sn: &Snap) {
 
 fn draw_footer(f: &mut Frame, r: Rect, sn: &Snap, paused: bool) {
     let p = pal();
-    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · s system · n network · g governance · d deploys · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
+    let (_, key, name, _) = PAGES[PAGE_NOW.load(std::sync::atomic::Ordering::Relaxed).min(PAGES.len() - 1)];
+    let mut v = vec![
+        bold(format!(" ◆ {} ", name.to_uppercase()), p.violet),
+        dim(format!("({key})")),
+        dim("    q quit · m menu · Tab next page"),
+    ];
     if paused {
         v.push(bold("   ⏸ PAUSED", p.warn));
     }
@@ -1856,6 +1885,43 @@ fn draw_footer(f: &mut Frame, r: Rect, sn: &Snap, paused: bool) {
         v.push(sp(format!("   API: {}", e.chars().take(60).collect::<String>()), p.bad));
     }
     f.render_widget(Paragraph::new(Line::from(v)), r);
+}
+
+/// The menu (key m), over the page: every page with its key and what it shows. A page's key, or ↑ ↓ and Enter,
+/// opens it; m or Esc closes the menu.
+fn draw_menu(f: &mut Frame, sel: usize, page: Page) {
+    let p = pal();
+    let area = f.area();
+    let w = 96.min(area.width.saturating_sub(4));
+    let h = (PAGES.len() as u16 + 9).min(area.height.saturating_sub(2));
+    let r = Rect { x: area.x + area.width.saturating_sub(w) / 2, y: area.y + area.height.saturating_sub(h) / 2, width: w, height: h };
+    f.render_widget(ratatui::widgets::Clear, r);
+    let mut lines = vec![Line::from("")];
+    for (i, (pg, key, name, what)) in PAGES.iter().enumerate() {
+        let here = if *pg == page { "  ◆ here" } else { "" };
+        lines.push(if i == sel {
+            let st = Style::new().fg(p.bg).bg(p.feed).add_modifier(Modifier::BOLD);
+            let row = format!(" ▸ {key}  {name:<14}{what}{here}");
+            Line::from(vec![Span::raw(" "), Span::styled(format!("{row:<width$}", width = (w as usize).saturating_sub(4)), st)])
+        } else {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::raw("   "),
+                bold(key.to_string(), p.gold),
+                Span::raw("  "),
+                bold(format!("{name:<14}"), p.ink),
+                dim(what.to_string()),
+                bold(here.to_string(), p.violet),
+            ])
+        });
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::raw("    "), bold("q", p.gold), dim(" quit · "), bold("p", p.gold), dim(" pause · "), bold("Tab", p.gold), dim(" next page · "), bold("m", p.gold), dim(" or "), bold("Esc", p.gold), dim(" close this menu")]));
+    lines.push(Line::from(dim("    ↑ ↓ and Enter, or press a page's key")));
+    lines.push(Line::from(""));
+    lines.push(Line::from(dim("    real time, about 30 frames a second · the validator is read 4× a second")));
+    lines.push(Line::from(dim("    counts run from the validator's last start")));
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("MENU", p.violet), dim(" · the pages of xrpl-watch")], p.violet)), r);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1960,6 +2026,7 @@ fn main() -> io::Result<()> {
 
     let mut page = Page::from_arg(arg_value(&args, "--page").as_deref());
     let once = args.iter().any(|a| a == "--once");
+    let show_menu = args.iter().any(|a| a == "--menu");
     let record = arg_value(&args, "--record");
     if once || record.is_some() {
         let (w, h) = parse_size(&args);
@@ -1987,7 +2054,13 @@ fn main() -> io::Result<()> {
             let tick = Instant::now();
             {
                 let g = shared.lock().unwrap();
-                term.draw(|f| draw(f, &g, false, page)).map_err(io::Error::other)?;
+                term.draw(|f| {
+                    draw(f, &g, false, page);
+                    if show_menu {
+                        draw_menu(f, page.index(), page);
+                    }
+                })
+                .map_err(io::Error::other)?;
             }
             let ansi = buffer_to_ansi(term.backend().buffer());
             match &record {
@@ -2018,32 +2091,50 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let mut paused = false;
     let mut frozen: Option<Shared> = None;
+    // The menu, when open: the row it has selected.
+    let mut menu: Option<usize> = None;
     let res = (|| -> io::Result<()> {
         loop {
             {
                 let g = shared.lock().unwrap();
-                if paused {
-                    let fz = frozen.get_or_insert_with(|| g.clone());
-                    terminal.draw(|f| draw(f, fz, true, page))?;
+                let view = if paused {
+                    &*frozen.get_or_insert_with(|| g.clone())
                 } else {
                     frozen = None;
-                    terminal.draw(|f| draw(f, &g, false, page))?;
-                }
+                    &*g
+                };
+                terminal.draw(|f| {
+                    draw(f, view, paused, page);
+                    if let Some(sel) = menu {
+                        draw_menu(f, sel, page);
+                    }
+                })?;
             }
             if event::poll(Duration::from_millis(33))? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
-                        match k.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                            KeyCode::Char('p') => paused = !paused,
-                            KeyCode::Char('i') => page = Page::Independence,
-                            KeyCode::Char('r') => page = Page::Receipts,
-                            KeyCode::Char('s') => page = Page::System,
-                            KeyCode::Char('n') => page = Page::Network,
-                            KeyCode::Char('g') => page = Page::Governance,
-                            KeyCode::Char('d') => page = Page::Deploys,
-                            KeyCode::Char('1') => page = Page::Main,
-                            KeyCode::Tab => page = page.next(),
+                        match (k.code, menu) {
+                            (KeyCode::Char('q' | 'Q'), _) => return Ok(()),
+                            (KeyCode::Char('m' | 'M'), None) => menu = Some(page.index()),
+                            (KeyCode::Char('m' | 'M') | KeyCode::Esc, Some(_)) => menu = None,
+                            (KeyCode::Esc, None) => return Ok(()),
+                            (KeyCode::Char('p' | 'P'), _) => paused = !paused,
+                            (KeyCode::Up, Some(sel)) => menu = Some((sel + PAGES.len() - 1) % PAGES.len()),
+                            (KeyCode::Down, Some(sel)) => menu = Some((sel + 1) % PAGES.len()),
+                            (KeyCode::Enter, Some(sel)) => {
+                                page = PAGES[sel].0;
+                                menu = None;
+                            }
+                            (KeyCode::Tab, _) => {
+                                page = page.next();
+                                menu = None;
+                            }
+                            (KeyCode::Char(c), _) => {
+                                if let Some(pg) = Page::from_key(c) {
+                                    page = pg;
+                                    menu = None;
+                                }
+                            }
                             _ => {}
                         }
                     }

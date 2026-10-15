@@ -3,9 +3,11 @@ name = "xrpl-watch"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal dashboard for the live validator: who writes the ledger database, the signing gate, the Rust engine, the C++ comparison copy, the upstream feed and consensus."
-license = "MIT"
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/ilubxrp589/xrpl-watch"
 
-# Its own workspace: the validator's build and Cargo.lock never see this tool's dependencies.
+# Its own workspace, so it builds the same inside or outside another Cargo workspace.
 [workspace]
 
 [dependencies]

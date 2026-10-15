@@ -67,7 +67,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     f.render_widget(Block::new().style(Style::new().bg(p.bg)), area);
     let sn = &g.snap;
     let net = &sn.net;
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Fill(1), Constraint::Length(1)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(14), Constraint::Length(10), Constraint::Fill(1), Constraint::Length(1)]).split(area);
     draw_header(f, rows[0], sn);
     let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
     let low = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[2]);
@@ -76,7 +76,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     // Our peers.
     let mut lines = vec![
         kv("connected", vec![bar(net.connected, net.max, bw, p.feed), bold(format!(" {}", net.connected), p.feed), dim(format!(" of {} allowed", net.max))]),
-        kv("", vec![sp(spark(&net.history.iter().copied().collect::<Vec<_>>(), (top[0].width as usize).saturating_sub(18).min(KEEP)), p.feed), dim("  the last ten minutes")]),
+        kv("", vec![if net.history.len() < 2 { dim("collecting …") } else { sp(spark(&net.history.iter().copied().collect::<Vec<_>>(), (top[0].width as usize).saturating_sub(18).min(KEEP)), p.feed) }, dim("  the last ten minutes")]),
         kv("heard of", vec![ink(commas(net.known)), dim(" servers known · "), ink(commas(net.discovered)), dim(" found this run")]),
         Line::from(""),
         Line::from(vec![dim(" their software, most first:")]),
@@ -84,14 +84,18 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let newest = net.versions.iter().filter(|(v, _)| v.starts_with("rippled") || v.starts_with("xrpld")).map(|(v, _)| split_version(v).1).max();
     for (v, n) in net.versions.iter().take(7) {
         let (name, ver) = split_version(v);
+        let name = if name.is_empty() { "unnamed".to_string() } else { name };
         let current = Some(&ver) == newest.as_ref();
-        let c = if name.contains("rust") { p.rust } else if current { p.good } else { p.warn };
+        // A peer whose crawl answer carries no server section says nothing about its software (cycle 176 names
+        // it "hidden"; before that our crawler wrongly filled in its first peer's version).
+        let hidden = name == "hidden" || v == "hidden";
+        let c = if hidden { p.dim } else if name.contains("rust") { p.rust } else if current { p.good } else { p.warn };
         lines.push(Line::from(vec![
             Span::raw("   "),
             bold(format!("{:<28}", format!("{name} {ver}")), c),
-            bar(*n, net.connected.max(1), bw, c),
+            bar(*n, net.connected.max(1), bw.saturating_sub(14).max(8), c),
             ink(format!(" {n:>3}")),
-            dim(if name.contains("rust") { "  another Rust validator" } else if current { "  current release" } else { "  older" }),
+            dim(if hidden { "  hides its version" } else if name.contains("rust") { "  a Rust validator" } else if current { "  current" } else { "  older" }),
         ]));
     }
     if !net.read {
@@ -124,7 +128,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let agree = u(c, &["monitor", "agreement", "count"]);
     let lines = vec![
         kv("trusted", vec![ink(format!("{unl} validators")), dim(format!(" on our list · {} heard this round", u(c, &["monitor", "tracked_validators"])))]),
-        kv("agreement", vec![bar(agree, unl, bw, p.good), bold(format!(" {agree} of {unl}"), p.good), dim(format!(" ({:.0}%) on one transaction set", agree as f64 * 100.0 / unl as f64))]),
+        kv("agreement", vec![bar(agree, unl, bw, p.good), bold(format!(" {agree} of {unl}"), p.good), dim(format!(" ({:.0}%) on one set", agree as f64 * 100.0 / unl as f64))]),
         kv("round", vec![ink(s(c, &["phase"]).to_string()), dim(format!(" · {} transactions on the table", u(c, &["candidate_set_size"])))]),
         kv("proposals", vec![ink(commas(u(c, &["monitor", "total_proposals"]))), dim(" heard since the start")]),
     ];
@@ -143,5 +147,5 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         kv("", vec![dim(format!("{:.1} requests a ledger · {} peers to ask · {} ms for the last", u(pf, &["requests"]) as f64 / fetched as f64, u(pf, &["peers"]), u(pf, &["ms_last"])))]),
     ];
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("VALIDATIONS · PEER LEDGERS", p.gold), dim(" · step 4, in shadow")], p.gold)), low[1]);
-    draw_footer(f, rows[3], sn, paused);
+    draw_footer(f, rows[4], sn, paused);
 }

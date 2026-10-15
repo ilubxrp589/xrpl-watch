@@ -116,6 +116,11 @@ fn dur(secs: u64) -> String {
     if d > 0 { format!("{d} d {h} h") } else if h > 0 { format!("{h} h {m} min") } else { format!("{m} min") }
 }
 
+/// A sparkline of `q`, or a note until there are two samples to draw.
+fn trend(q: &VecDeque<u64>, width: usize, c: Color) -> Span<'static> {
+    if q.len() < 2 { dim("collecting …") } else { sp(spark(&q.iter().copied().collect::<Vec<_>>(), width), c) }
+}
+
 /// The newest sample of a series kept ×`scale`.
 fn last(q: &VecDeque<u64>, scale: f64) -> f64 {
     q.back().copied().unwrap_or(0) as f64 / scale
@@ -128,7 +133,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let sn = &g.snap;
     let sy = &sn.sys;
     let (h, m) = (&sy.host, &sy.met);
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Fill(1), Constraint::Length(1)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(11), Constraint::Length(10), Constraint::Fill(1), Constraint::Length(1)]).split(area);
     draw_header(f, rows[0], sn);
     let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
     let low = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[2]);
@@ -148,7 +153,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         kv("up", vec![ink(dur(u(h, &["uptime_s"])))]),
         Line::from(""),
         kv("CPU", { let mut v = meter(cpu / 100.0, bw, level(cpu, 70.0, 90.0)); v.push(bold(format!(" {cpu:>5.1}%"), level(cpu, 70.0, 90.0))); v }),
-        kv("", vec![sp(spark(&sy.cpu.iter().copied().collect::<Vec<_>>(), sw), p.feed), dim("  the last minutes")]),
+        kv("", vec![trend(&sy.cpu, sw, p.feed), dim("  the last minutes")]),
         kv("load", { let mut v = meter(l1 / cores as f64, bw, level(l1 / cores as f64, 0.7, 1.0)); v.push(dim(format!(" {}", load.iter().filter_map(|x| x.as_f64()).map(|x| format!("{x:.2}")).collect::<Vec<_>>().join(" · ")))); v }),
         kv("memory", { let mut v = meter(ram_used / ram_total.max(0.001), bw, level(ram_used / ram_total.max(0.001), 0.8, 0.92)); v.push(dim(format!(" {ram_used:.0} of {ram_total:.0} GB"))); v }),
         kv("swap", { let mut v = meter(swap_used / swap_total, bw, level(swap_used / swap_total, 0.5, 0.8)); v.push(dim(format!(" {swap_used:.1} of {swap_total:.0} GB"))); v }),
@@ -165,9 +170,9 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         kv("process", vec![ink(format!("pid {}", u(h, &["validator_pid"]))), dim(format!(" · {} threads", u(h, &["validator_threads"])))]),
         kv("running", vec![ink(dur(u(h, &["validator_uptime_s"]))), dim(" since its last start")]),
         Line::from(""),
-        kv("CPU", { let mut v = meter(vcpu / (100.0 * cores as f64), bw, level(vcpu / cores as f64, 70.0, 90.0)); v.push(bold(format!(" {vcpu:>5.1}%"), p.rust)); v.push(dim(" of one core ×100")); v }),
-        kv("", vec![sp(spark(&sy.vcpu.iter().copied().collect::<Vec<_>>(), sw), p.rust)]),
-        kv("memory", { let mut v = meter(vram / ram_total.max(0.001), bw, level(vram / ram_total.max(0.001), 0.6, 0.8)); v.push(dim(format!(" {vram:.1} GB of the machine's {ram_total:.0}"))); v }),
+        kv("CPU", { let mut v = meter(vcpu / (100.0 * cores as f64), bw, level(vcpu / cores as f64, 70.0, 90.0)); v.push(bold(format!(" {vcpu:>5.1}%"), p.rust)); v.push(dim(" of one core")); v }),
+        kv("", vec![trend(&sy.vcpu, sw, p.rust)]),
+        kv("memory", { let mut v = meter(vram / ram_total.max(0.001), bw, level(vram / ram_total.max(0.001), 0.6, 0.8)); v.push(dim(format!(" {vram:.1} of {ram_total:.0} GB"))); v }),
         kv("payments", vec![ink(sn.flow_engine.clone().unwrap_or_else(|| "model".to_string())), dim(" flow engine (XRPL_FLOW_ENGINE)")]),
     ];
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE VALIDATOR PROCESS", p.rust), dim(" · live_viewer")], p.rust)), top[1]);
@@ -184,8 +189,8 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         }
     }
     lines.push(Line::from(""));
-    lines.push(kv("reading", vec![sp(spark(&sy.rd.iter().copied().collect::<Vec<_>>(), sw), p.feed), bold(format!(" {:.2} MB/s", last(&sy.rd, 100.0)), p.feed)]));
-    lines.push(kv("writing", vec![sp(spark(&sy.wr.iter().copied().collect::<Vec<_>>(), sw), p.gold), bold(format!(" {:.2} MB/s", last(&sy.wr, 100.0)), p.gold)]));
+    lines.push(kv("reading", vec![trend(&sy.rd, sw, p.feed), bold(format!(" {:.2} MB/s", last(&sy.rd, 100.0)), p.feed)]));
+    lines.push(kv("writing", vec![trend(&sy.wr, sw, p.gold), bold(format!(" {:.2} MB/s", last(&sy.wr, 100.0)), p.gold)]));
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("DISKS", p.gold), dim(" · how full, and what moves")], p.gold)), low[0]);
 
     // Temperature and network.
@@ -200,10 +205,10 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         lines.push(Line::from(dim(" no sensors readable")));
     }
     lines.push(Line::from(""));
-    lines.push(kv("net in", vec![sp(spark(&sy.net_in.iter().copied().collect::<Vec<_>>(), sw), p.feed), bold(format!(" {:.2} MB/s", last(&sy.net_in, 100.0)), p.feed)]));
-    lines.push(kv("net out", vec![sp(spark(&sy.net_out.iter().copied().collect::<Vec<_>>(), sw), p.pink), bold(format!(" {:.2} MB/s", last(&sy.net_out, 100.0)), p.pink)]));
+    lines.push(kv("net in", vec![trend(&sy.net_in, sw, p.feed), bold(format!(" {:.2} MB/s", last(&sy.net_in, 100.0)), p.feed)]));
+    lines.push(kv("net out", vec![trend(&sy.net_out, sw, p.pink), bold(format!(" {:.2} MB/s", last(&sy.net_out, 100.0)), p.pink)]));
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("TEMPERATURE · NETWORK", p.pink)], p.pink)), low[1]);
-    draw_footer(f, rows[3], sn, paused);
+    draw_footer(f, rows[4], sn, paused);
 }
 
 fn clip_mount(m: &str) -> String {

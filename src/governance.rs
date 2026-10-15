@@ -27,7 +27,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let sn = &g.snap;
     let am = &sn.ind.amend;
     let feats = &sn.features;
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Fill(1), Constraint::Length(1)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(9), Constraint::Fill(1), Constraint::Length(1)]).split(area);
     draw_header(f, rows[0], sn);
     let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
     let low = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(rows[2]);
@@ -96,12 +96,14 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
 
     // Our readiness.
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for r in am["ready_pending"].as_array().into_iter().flatten() {
+    // Only what is still off: an amendment already enabled is no longer pending.
+    let on = |name: &str| all.iter().any(|f| f["name"].as_str() == Some(name) && f["enabled"].as_bool().unwrap_or(false));
+    for r in am["ready_pending"].as_array().into_iter().flatten().filter(|r| !on(r["name"].as_str().unwrap_or(""))) {
         lines.push(Line::from(vec![Span::raw(" "), bold(r["name"].as_str().unwrap_or("?").to_string(), p.good)]));
         lines.push(Line::from(vec![Span::raw("   "), dim(r["evidence"].as_str().unwrap_or("").to_string())]));
     }
     if lines.is_empty() {
-        lines.push(Line::from(dim(" nothing pending")));
+        lines.push(Line::from(dim(" nothing pending: what it was ready for is already on")));
     }
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel(vec![bold("OUR ENGINE IS READY FOR", p.good), dim(" · and the evidence")], p.good)),

@@ -211,9 +211,21 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         let ready = nx["stages"].as_array().map_or(false, |a| {
             a.iter().all(|st| st[0].as_str() == Some("deploy") || st[1].as_str() == Some("GREEN")) && a.iter().any(|st| st[0].as_str() == Some("deploy") && st[1].as_str() != Some("GREEN"))
         });
-        if ready {
-            lines.push(Line::from(""));
-            lines.push(Line::from(sp(format!(" cycle {} has passed every test; its deploy question comes next", u(nx, &["cycle"])), p.warn)));
+        let tap = &nx["tap"];
+        match tap["answer"].as_str() {
+            Some("yes") if ready => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(sp(format!(" you said Yes to #{}: cycle {} is deploying", u(tap, &["n"]), u(nx, &["cycle"])), p.good)));
+            }
+            Some("no") => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(sp(format!(" you said No to #{}: cycle {} is held", u(tap, &["n"]), u(nx, &["cycle"])), p.warn)));
+            }
+            _ if ready && tap.is_null() => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(sp(format!(" cycle {} has passed every test; its deploy question comes next", u(nx, &["cycle"])), p.warn)));
+            }
+            _ => {}
         }
     } else {
         for t in &taps {

@@ -54,11 +54,21 @@ fn bar(n: u64, of: u64, width: usize, c: Color) -> Span<'static> {
 }
 
 /// "rippled-3.4.1" → ("rippled", "3.4.1").
+/// "rippled-3.4.1" -> ("rippled", "3.4.1"); the version starts at the first '-' or '/' followed by a digit, so
+/// "rippled-0.0.0-dev+18208d5" keeps its "-dev+…" and "xrpl-rust-validator/0.4.0+…" keeps its name whole.
 fn split_version(v: &str) -> (String, String) {
-    match v.rsplit_once(['-', '/']) {
-        Some((name, ver)) => (name.to_string(), ver.to_string()),
+    let b = v.as_bytes();
+    match (1..b.len()).find(|&i| (b[i - 1] == b'-' || b[i - 1] == b'/') && b[i].is_ascii_digit()) {
+        Some(i) => (v[..i - 1].to_string(), v[i..].to_string()),
         None => (v.to_string(), String::new()),
     }
+}
+
+/// The numbers a version starts with, for ordering: "3.4.1" -> [3, 4, 1]; "0.0.0-dev+…" -> [0, 0, 0]. Compared as
+/// text, "dev+18208d5" sorted above "3.4.1" and a dev build was shown as the current release (2026-10-15).
+fn version_key(ver: &str) -> Vec<u32> {
+    let lead: String = ver.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    lead.split('.').filter_map(|x| x.parse().ok()).collect()
 }
 
 pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
@@ -81,21 +91,23 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         Line::from(""),
         Line::from(vec![dim(" their software, most first:")]),
     ];
-    let newest = net.versions.iter().filter(|(v, _)| v.starts_with("rippled") || v.starts_with("xrpld")).map(|(v, _)| split_version(v).1).max();
+    let newest = net.versions.iter().filter(|(v, _)| v.starts_with("rippled") || v.starts_with("xrpld")).map(|(v, _)| version_key(&split_version(v).1)).max();
     for (v, n) in net.versions.iter().take(7) {
         let (name, ver) = split_version(v);
         let name = if name.is_empty() { "unnamed".to_string() } else { name };
-        let current = Some(&ver) == newest.as_ref();
+        let current = newest.as_ref().is_some_and(|k| !k.is_empty() && *k == version_key(&ver));
         // A peer whose crawl answer carries no server section says nothing about its software (cycle 176 names
         // it "hidden"; before that our crawler wrongly filled in its first peer's version).
         let hidden = name == "hidden" || v == "hidden";
-        let c = if hidden { p.dim } else if name.contains("rust") { p.rust } else if current { p.good } else { p.warn };
+        // An empty answer names no software at all: neither current nor older.
+        let blank = v.is_empty();
+        let c = if hidden || blank { p.dim } else if name.contains("rust") { p.rust } else if current { p.good } else { p.warn };
         lines.push(Line::from(vec![
             Span::raw("   "),
             bold(format!("{:<28}", format!("{name} {ver}")), c),
             bar(*n, net.connected.max(1), bw.saturating_sub(14).max(8), c),
             ink(format!(" {n:>3}")),
-            dim(if hidden { "  hides its version" } else if name.contains("rust") { "  a Rust validator" } else if current { "  current" } else { "  older" }),
+            dim(if hidden { "  hides its version" } else if blank { "  no version given" } else if name.contains("rust") { "  a Rust validator" } else if current { "  current" } else { "  older" }),
         ]));
     }
     if !net.read {

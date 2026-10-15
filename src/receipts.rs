@@ -44,6 +44,31 @@ pub struct Item {
     pub what: String,
 }
 
+/// What became of a receipt, from receipts_fixed.json beside the logs: its fix and when it went live, a replay that
+/// cleared it, or nothing yet.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Status {
+    Fixed(String),
+    NotABug(String),
+    Open,
+}
+
+/// One archived run of one log (each launch moves the step logs to receipts-archive/<name>.<YYYYmmdd-HHMMSS>.jsonl).
+#[derive(Clone)]
+pub struct Archived {
+    pub source: usize,
+    /// "10-14 12:52", from the file name.
+    pub when: String,
+    pub ledgers: usize,
+    pub lines: usize,
+    pub fixed: usize,
+    pub not_a_bug: usize,
+    /// The ledgers still open, newest first, with a receipt of each.
+    pub open: Vec<Item>,
+    /// The fix most of the run's ledgers share, for the one-line summary.
+    pub fix: Option<String>,
+}
+
 /// What the collector keeps between reads: each log's size and modification time with the lines it held, so an
 /// unchanged log is not read again.
 #[derive(Clone, Default)]
@@ -53,11 +78,27 @@ pub struct Rec {
     /// The first ledger of this run.
     pub run_start: u64,
     pub read: bool,
+    /// receipts_fixed.json: "<log>:<seq>" (or a bare seq for the writer's events) → what fixed it.
+    fixed: BTreeMap<String, String>,
+    fixed_sig: Option<SystemTime>,
+    /// The archived runs, newest first, re-read when the archive directory or the fixes change.
+    pub history: Vec<Archived>,
+    history_sig: Option<(SystemTime, Option<SystemTime>)>,
 }
 
 impl Rec {
     pub fn count(&self, i: usize) -> Option<usize> {
         self.seen.get(i).and_then(|s| s.as_ref()).map(|(_, _, v)| v.len())
+    }
+    /// What became of receipt `it`.
+    pub fn status(&self, it: &Item) -> Status {
+        let key = format!("{}:{}", SOURCES[it.source].file.trim_end_matches(".jsonl"), it.seq);
+        let hit = self.fixed.get(&key).or_else(|| if SOURCES[it.source].kind == Kind::Writer { self.fixed.get(&it.seq.to_string()) } else { None });
+        match hit {
+            Some(t) if t.starts_with("NOT A BUG") => Status::NotABug(t.trim_start_matches("NOT A BUG").trim_start_matches([':', ' ']).to_string()),
+            Some(t) => Status::Fixed(t.clone()),
+            None => Status::Open,
+        }
     }
     /// The newest receipts first, across every source.
     pub fn latest(&self, n: usize) -> Vec<Item> {
@@ -71,7 +112,20 @@ impl Rec {
 /// One read: every log that changed since `prev`, its receipts from `run_start` on.
 pub fn read(cfg: &Cfg, vproc: Option<&ValidatorProc>, prev: &Rec, run_start: u64) -> Rec {
     let data = std::path::Path::new(&cfg.receipts).parent().map(|d| d.to_path_buf()).unwrap_or_default();
-    let mut rec = Rec { seen: Vec::with_capacity(SOURCES.len()), run_start, read: true };
+    let mut rec = Rec { seen: Vec::with_capacity(SOURCES.len()), run_start, read: true, ..Rec::default() };
+    // The fixes, re-read when the file changes.
+    let fixed_sig = fs::metadata(&cfg.fixed_log).and_then(|m| m.modified()).ok();
+    if fixed_sig.is_some() && fixed_sig == prev.fixed_sig {
+        rec.fixed = prev.fixed.clone();
+    } else {
+        rec.fixed = fs::read_to_string(&cfg.fixed_log)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.as_object().cloned())
+            .map(|o| o.into_iter().filter_map(|(k, v)| Some((k, v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+    }
+    rec.fixed_sig = fixed_sig;
     for (i, src) in SOURCES.iter().enumerate() {
         let path = match src.kind {
             Kind::Writer => cfg.receipts.clone(),
@@ -101,7 +155,67 @@ pub fn read(cfg: &Cfg, vproc: Option<&ValidatorProc>, prev: &Rec, run_start: u64
         }
         rec.seen.push(Some((sig.0, sig.1, items)));
     }
+    // The archived runs.
+    let dir = data.join("receipts-archive");
+    let hsig = fs::metadata(&dir).and_then(|m| m.modified()).ok().map(|t| (t, fixed_sig));
+    if hsig.is_some() && hsig == prev.history_sig {
+        rec.history = prev.history.clone();
+    } else {
+        rec.history = history(&dir, &rec);
+    }
+    rec.history_sig = hsig;
     rec
+}
+
+/// Every archived run in `dir`, newest first, with what became of its receipts.
+fn history(dir: &std::path::Path, rec: &Rec) -> Vec<Archived> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else { return out };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        // <log>.<YYYYmmdd-HHMMSS>.jsonl
+        let Some(stem) = name.strip_suffix(".jsonl") else { continue };
+        let Some((log, ts)) = stem.rsplit_once('.') else { continue };
+        let Some(source) = SOURCES.iter().position(|s| s.file.trim_end_matches(".jsonl") == log) else { continue };
+        let raw = fs::read(e.path()).unwrap_or_default();
+        let mut by_seq: BTreeMap<u64, Item> = BTreeMap::new();
+        let mut lines = 0;
+        for line in raw.split(|c| *c == b'\n') {
+            let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+            if let Some(it) = item(source, SOURCES[source].kind, &v) {
+                lines += 1;
+                by_seq.entry(it.seq).or_insert(it);
+            }
+        }
+        let (mut fixed, mut not_a_bug) = (0, 0);
+        let mut open = Vec::new();
+        let mut fixes: BTreeMap<String, usize> = BTreeMap::new();
+        for it in by_seq.values().rev() {
+            match rec.status(it) {
+                Status::Fixed(t) => {
+                    fixed += 1;
+                    *fixes.entry(t).or_default() += 1;
+                }
+                Status::NotABug(_) => not_a_bug += 1,
+                Status::Open => open.push(it.clone()),
+            }
+        }
+        let when = if ts.len() >= 13 { format!("{}-{} {}:{}", &ts[4..6], &ts[6..8], &ts[9..11], &ts[11..13]) } else { ts.to_string() };
+        // One fix: its words. Several: how many, and the cycles they went live in.
+        let fix = match fixes.len() {
+            0 => None,
+            1 => fixes.into_keys().next(),
+            n => {
+                let mut cycles: Vec<String> = fixes.keys().filter_map(|t| t.rsplit_once("(cycle ").map(|(_, c)| c.trim_end_matches(')').to_string())).collect();
+                cycles.sort();
+                cycles.dedup();
+                Some(format!("{n} different fixes{}", if cycles.is_empty() { String::new() } else { format!(", live in cycle {}", cycles.join(" and ")) }))
+            }
+        };
+        out.push(Archived { source, when, ledgers: by_seq.len(), lines, fixed, not_a_bug, open, fix });
+    }
+    out.sort_by(|a, b| b.when.cmp(&a.when).then(a.source.cmp(&b.source)));
+    out
 }
 
 fn read_tail(path: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -268,11 +382,13 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     f.render_widget(Block::new().style(Style::new().bg(p.bg)), area);
     let sn = &g.snap;
     let rec = &sn.rec;
+    let hist_rows = (rec.history.len() + rec.history.iter().map(|h| h.open.len().min(3)).sum::<usize>()).clamp(1, 12) as u16;
     let rows = Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Length(6), // what this page is + the counts
-        Constraint::Fill(1),   // the latest receipts
-        Constraint::Length(1), // footer
+        Constraint::Length(1),             // header
+        Constraint::Length(7),             // what this page is + the counts
+        Constraint::Fill(1),               // the receipts of this run
+        Constraint::Length(hist_rows + 2), // the archived runs
+        Constraint::Length(1),             // footer
     ])
     .split(area);
     draw_header(f, rows[0], sn);
@@ -309,7 +425,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     f.render_widget(Paragraph::new(intro).block(panel(vec![bold("RECEIPTS", p.pink), dim(" · since the validator started")], p.pink)), rows[1]);
 
     // The latest receipts.
-    let block = panel(vec![bold("LATEST", p.feed), dim(" · newest first · age · where · ledger · transaction · what it means")], p.feed);
+    let block = panel(vec![bold("SINCE THE VALIDATOR STARTED", p.feed), dim(" · newest first · age · where · ledger · transaction · what it means · what became of it")], p.feed);
     let inner = block.inner(rows[2]);
     f.render_widget(block, rows[2]);
     let now = u(&sn.eng, &["ledger_seq"]);
@@ -320,16 +436,65 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         items
             .iter()
             .map(|it| {
-                Line::from(vec![
+                let mut l = vec![
                     dim(format!(" {:>8} ", ago_ledgers(now, it.seq))),
                     bold(format!("{:<20}", SOURCES[it.source].label), p.violet),
                     ink(format!("#{:<12}", commas(it.seq))),
                     dim(format!("{:<13}", it.tx)),
                     ink(it.what.clone()),
-                ])
+                ];
+                l.extend(status_spans(&rec.status(it)));
+                Line::from(l)
             })
             .collect()
     };
     f.render_widget(Paragraph::new(lines), inner);
-    draw_footer(f, rows[3], sn, paused);
+
+    // The archived runs: one line each, then the ledgers still open.
+    let mut h: Vec<Line<'static>> = Vec::new();
+    for a in &rec.history {
+        let mut l = vec![
+            dim(format!(" {:<12}", a.when)),
+            bold(format!("{:<20}", SOURCES[a.source].label), p.violet),
+            ink(format!("{:>6} ledger{}", commas(a.ledgers as u64), if a.ledgers == 1 { " " } else { "s" })),
+            dim(format!(" · {:>6} line{}   ", commas(a.lines as u64), if a.lines == 1 { " " } else { "s" })),
+        ];
+        let open = a.open.len();
+        if open == 0 && a.not_a_bug == 0 {
+            l.push(bold("✓ all fixed", p.good));
+        } else {
+            l.push(bold(format!("✓ {} fixed", commas(a.fixed as u64)), p.good));
+            if a.not_a_bug > 0 {
+                l.push(dim(format!(" · {} not a bug", a.not_a_bug)));
+            }
+            if open > 0 {
+                l.push(bold(format!(" · {open} open"), p.bad));
+            }
+        }
+        if let Some(fx) = &a.fix {
+            l.push(dim(format!("   {}", clip(fx, 110))));
+        }
+        h.push(Line::from(l));
+        for it in a.open.iter().take(3) {
+            h.push(Line::from(vec![dim("              "), ink(format!("#{:<12}", commas(it.seq))), dim(format!("{:<13}", it.tx)), ink(clip(&it.what, 120)), bold("  ● open", p.bad)]));
+        }
+    }
+    if h.is_empty() {
+        h.push(Line::from(dim(" nothing archived yet")));
+    }
+    f.render_widget(
+        Paragraph::new(h).block(panel(vec![bold("HISTORY", p.gold), dim(" · earlier runs, archived at each start · what became of their receipts")], p.gold)),
+        rows[3],
+    );
+    draw_footer(f, rows[4], sn, paused);
+}
+
+/// A receipt's fate, after its words.
+fn status_spans(st: &Status) -> Vec<Span<'static>> {
+    let p = pal();
+    match st {
+        Status::Fixed(t) => vec![bold("  ✓ fixed", p.good), dim(format!(": {}", clip(t, 70)))],
+        Status::NotABug(t) => vec![dim("  ○ not a bug"), dim(if t.is_empty() { String::new() } else { format!(": {}", clip(t, 60)) })],
+        Status::Open => vec![bold("  ● open", p.bad)],
+    }
 }

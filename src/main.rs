@@ -44,6 +44,9 @@ use serde_json::{json, Value};
 
 mod independence;
 mod receipts;
+mod system;
+mod network;
+mod governance;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Palette: HALCYON synthwave (24-bit), or the 16 terminal colours with --basic
@@ -219,6 +222,12 @@ struct Snap {
     ind: independence::Ind,
     /// The RECEIPTS page: every log of differences, this run.
     rec: receipts::Rec,
+    /// The SYSTEM page: the host sidecar and the sensors.
+    sys: system::Sys,
+    /// The NETWORK page: the peers.
+    net: network::Net,
+    /// The GOVERNANCE page: the upstream's whole `feature` answer (every amendment), re-read each minute.
+    features: Value,
     at: Option<SystemTime>,
 }
 
@@ -520,6 +529,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
     let mut fixed: BTreeMap<u64, String> = BTreeMap::new();
     let mut fixed_sig: Option<SystemTime> = None;
     let mut amendments: Vec<(String, i64, bool)> = Vec::new();
+    let mut features = Value::Null;
     let mut amend_at: Option<Instant> = None;
     // Slower things than the validator's own counters: the upstream (1 s), the process scan (5 s), the receipts
     // file (re-read only when it changes).
@@ -530,6 +540,8 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
     let mut receipts_at: Option<Instant> = None;
     let mut ind_at: Option<Instant> = None;
     let mut rec_at: Option<Instant> = None;
+    let mut sys_at: Option<Instant> = None;
+    let mut net_at: Option<Instant> = None;
     loop {
         let t0 = Instant::now();
         let mut sn = Snap::default();
@@ -552,12 +564,14 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
         if amend_at.map_or(true, |t| t.elapsed() > Duration::from_secs(60)) {
             if let Ok(v) = rpc(&cfg.upstream, "feature") {
                 amendments = pending_amendments(&v["features"]);
+                features = v["features"].clone();
                 amend_at = Some(Instant::now());
             }
         }
         // Count down between fetches.
         let since = amend_at.map(|t| t.elapsed().as_secs() as i64).unwrap_or(0);
         sn.amendments = amendments.iter().map(|(n, e, s)| (n.clone(), e - since, *s)).collect();
+        sn.features = features.clone();
         if proc_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
             vproc = validator_proc();
             proc_at = Some(Instant::now());
@@ -586,6 +600,22 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
             rec_at = Some(Instant::now());
         } else {
             sn.rec = prev_rec;
+        }
+        // The SYSTEM page, every 2 s.
+        let prev_sys = prev.as_ref().map(|p| p.sys.clone()).unwrap_or_default();
+        if sys_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(2)) {
+            sn.sys = system::read(&prev_sys);
+            sys_at = Some(Instant::now());
+        } else {
+            sn.sys = prev_sys;
+        }
+        // The NETWORK page, every 5 s.
+        let prev_net = prev.as_ref().map(|p| p.net.clone()).unwrap_or_default();
+        if net_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+            sn.net = network::read(&cfg, &prev_net);
+            net_at = Some(Instant::now());
+        } else {
+            sn.net = prev_net;
         }
         let sig = fs::metadata(&cfg.receipts).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
         let stale = receipts_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(30));
@@ -1005,6 +1035,9 @@ enum Page {
     Main,
     Independence,
     Receipts,
+    System,
+    Network,
+    Governance,
 }
 
 impl Page {
@@ -1012,6 +1045,9 @@ impl Page {
         match a {
             Some("independence") => Page::Independence,
             Some("receipts") => Page::Receipts,
+            Some("system") => Page::System,
+            Some("network") => Page::Network,
+            Some("governance") => Page::Governance,
             _ => Page::Main,
         }
     }
@@ -1020,7 +1056,10 @@ impl Page {
         match self {
             Page::Main => Page::Independence,
             Page::Independence => Page::Receipts,
-            Page::Receipts => Page::Main,
+            Page::Receipts => Page::System,
+            Page::System => Page::Network,
+            Page::Network => Page::Governance,
+            Page::Governance => Page::Main,
         }
     }
 }
@@ -1029,6 +1068,9 @@ fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
     match page {
         Page::Independence => return independence::draw(f, g, paused),
         Page::Receipts => return receipts::draw(f, g, paused),
+        Page::System => return system::draw(f, g, paused),
+        Page::Network => return network::draw(f, g, paused),
+        Page::Governance => return governance::draw(f, g, paused),
         Page::Main => {}
     }
     let p = pal();
@@ -1789,7 +1831,7 @@ fn draw_ledger_mix(f: &mut Frame, r: Rect, sn: &Snap) {
 
 fn draw_footer(f: &mut Frame, r: Rect, sn: &Snap, paused: bool) {
     let p = pal();
-    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
+    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · s system · n network · g governance · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
     if paused {
         v.push(bold("   ⏸ PAUSED", p.warn));
     }
@@ -1979,6 +2021,9 @@ fn main() -> io::Result<()> {
                             KeyCode::Char('p') => paused = !paused,
                             KeyCode::Char('i') => page = Page::Independence,
                             KeyCode::Char('r') => page = Page::Receipts,
+                            KeyCode::Char('s') => page = Page::System,
+                            KeyCode::Char('n') => page = Page::Network,
+                            KeyCode::Char('g') => page = Page::Governance,
                             KeyCode::Char('1') => page = Page::Main,
                             KeyCode::Tab => page = page.next(),
                             _ => {}

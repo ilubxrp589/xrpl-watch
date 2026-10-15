@@ -38,6 +38,10 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let guard = &am["guard"];
     let gstatus = s(guard, &["status"]);
     let gap = guard["gap_enabled"].as_array().map_or(0, |a| a.len()) + guard["unknown_enabled"].as_array().map_or(0, |a| a.len());
+    let on = |name: &str| all.iter().any(|f| f["name"].as_str() == Some(name) && f["enabled"].as_bool().unwrap_or(false));
+    // Step 9 (XRPL_VOTE_PENDING_ONLY): the ballot drops what mainnet has already enabled, as rippled's does.
+    let pending_only = am["pending_only"].as_bool().unwrap_or(false);
+    let sent = votes.iter().filter(|v| !pending_only || !on(v.as_str())).count();
 
     // Where things stand.
     let lines = vec![
@@ -47,7 +51,14 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
             bold(if gstatus == "ok" && gap == 0 { "ok".to_string() } else { gstatus.to_string() }, if gstatus == "ok" && gap == 0 { p.good } else { p.bad }),
             dim(" · no amendment our engine doesn't know is on (one would stop it signing)"),
         ]),
-        kv("our votes", vec![ink(format!("yes on {}", votes.len())), dim(" (the validator's own ballot, sent with each validation)")]),
+        if pending_only {
+            kv("our votes", vec![
+                ink(format!("yes on {sent}")),
+                dim(format!(" pending only · {} of our {} already on, left off the ballot", votes.len() - sent, votes.len())),
+            ])
+        } else {
+            kv("our votes", vec![ink(format!("yes on {}", votes.len())), dim(" (the validator's own ballot, sent with each validation)")])
+        },
         Line::from(""),
         Line::from(dim(" View only. Changing a vote goes to you as a Telegram tap.")),
     ];
@@ -97,7 +108,6 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     // Our readiness.
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Only what is still off: an amendment already enabled is no longer pending.
-    let on = |name: &str| all.iter().any(|f| f["name"].as_str() == Some(name) && f["enabled"].as_bool().unwrap_or(false));
     for r in am["ready_pending"].as_array().into_iter().flatten().filter(|r| !on(r["name"].as_str().unwrap_or(""))) {
         lines.push(Line::from(vec![Span::raw(" "), bold(r["name"].as_str().unwrap_or("?").to_string(), p.good)]));
         lines.push(Line::from(vec![Span::raw("   "), dim(r["evidence"].as_str().unwrap_or("").to_string())]));

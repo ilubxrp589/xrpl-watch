@@ -45,7 +45,7 @@ It needs a recent stable Rust (it is built with 1.94) and a terminal with 24-bit
 | `TUI_FEED` | `/mnt/xrpl-data/tui_feed.json` | the deploy cycle, soak and public scores (Deploys, System and Network pages) |
 | `DAILY_REPORTS` | `/mnt/xrpl-data/daily-reports` | the folder of daily `.md` reports |
 | `XRPL_WATCH_HOST` | this machine's hostname | what the screen calls the validator's machine |
-| `XRPL_WATCH_UPSTREAM` | from `UPSTREAM_RPC`: a private IPv4 address shows as `.` and its last number (`10.0.0.12` → `.12`), a loopback one as "the upstream", anything else as its host name | what the screen calls the upstream server |
+| `XRPL_WATCH_UPSTREAM` | from `UPSTREAM_RPC`: a private IPv4 address shows as `.` and its last number (such as `.12`), a loopback one as "the upstream", anything else as its host name | what the screen calls the upstream server |
 
 A page whose source is missing says so and the rest keep working.
 

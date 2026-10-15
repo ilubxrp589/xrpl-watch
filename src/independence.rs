@@ -104,7 +104,7 @@ fn on(ind: &Ind, k: &str) -> bool {
 }
 
 fn kv(k: &str, v: Vec<Span<'static>>) -> Line<'static> {
-    let mut l = vec![Span::styled(format!(" {k:<11}"), Style::new().fg(pal().violet).add_modifier(Modifier::BOLD))];
+    let mut l = vec![Span::styled(format!(" {k:<10} "), Style::new().fg(pal().violet).add_modifier(Modifier::BOLD))];
     l.extend(v);
     Line::from(l)
 }
@@ -265,7 +265,7 @@ fn steps(sn: &Snap) -> Vec<Step> {
         if enabled {
             lines.push(kv("fetched", vec![bold(commas(u(pf, &["fetched"])), p.feed), dim(format!(" proven to the ledger hash · {} peers", u(pf, &["peers"])))]));
             lines.push(kv(
-                "vs .39",
+                &format!("vs {}", up_name()),
                 vec![bold(commas(u(pf, &["matched"])), p.good), dim(" identical · "), zero_good(u(pf, &["differ"])), dim(" differ · "), zero_good(u(pf, &["failed"])), dim(" failed")],
             ));
             let per = if u(pf, &["fetched"]) > 0 { u(pf, &["requests"]) as f64 / u(pf, &["fetched"]) as f64 } else { 0.0 };
@@ -284,7 +284,7 @@ fn steps(sn: &Snap) -> Vec<Step> {
                 "validated",
                 vec![
                     bold(commas(u(ov, &["agree"])), p.good),
-                    dim(" = .39's · "),
+                    dim(format!(" = {}'s · ", up_name())),
                     zero_good(u(ov, &["differ"])),
                     dim(" differ · "),
                     zero_good(u(ov, &["short"])),
@@ -297,8 +297,8 @@ fn steps(sn: &Snap) -> Vec<Step> {
                 ],
             ));
         }
-        lines.push(kv("source", vec![ink(".39"), dim(" · peers are the witness until 4.3")]));
-        let hero = enabled.then(|| (u(pf, &["matched"]), "ledgers from peers, same as .39's".to_string(), p.feed));
+        lines.push(kv("source", vec![ink(up_name()), dim(" · peers are the witness until 4.3")]));
+        let hero = enabled.then(|| (u(pf, &["matched"]), format!("ledgers from peers, same as {}'s", up_name()), p.feed));
         out.push(Step { n: 4, name: "LEDGERS FROM PEERS", st: if enabled { St::Shadow } else { St::Built }, lines, hero });
     }
 
@@ -441,9 +441,9 @@ fn draw_borrowed(f: &mut Frame, r: Rect, st: &[Step]) {
         ])
     };
     let lines = vec![
-        row("each ledger's transactions, their records and the header", "the stock xrpld on .39", 4),
-        row("the transaction records and the transaction tree", ".39's metadata", 2),
-        row("the order the transactions apply in", ".39's position numbers", 3),
+        row("each ledger's transactions, their records and the header", &format!("the stock xrpld on {}", up_name()), 4),
+        row("the transaction records and the transaction tree", &format!("{}'s metadata", up_name()), 2),
+        row("the order the transactions apply in", &format!("{}'s position numbers", up_name()), 3),
         row("the ledger hash it signs", "the network's announcement", 5),
         row("libxrpl at build time", "the ffi feature", 6),
     ];

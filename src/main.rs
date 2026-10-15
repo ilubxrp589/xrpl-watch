@@ -13,7 +13,8 @@
 //!
 //! It reads the validator's API (VALIDATOR_BASE, default http://localhost:3777), the upstream's server_info and
 //! feature (UPSTREAM_RPC, else the validator's XRPL_RPC_URL), and two files on the validator host: the native
-//! shadow's receipts and the writer's decisions. It writes nothing.
+//! shadow's receipts and the writer's decisions. It writes nothing. The screen names this machine by its hostname
+//! (XRPL_WATCH_HOST) and the upstream by its address (XRPL_WATCH_UPSTREAM; a private IPv4 shows as its last number).
 //!
 //!   xrpl-watch [--interval S]          the live screen (q quits, p pauses): ~30 fps, the validator read every
 //!                                      0.25 s (the upstream every 1 s, amendments every minute)
@@ -129,6 +130,29 @@ struct Cfg {
     interval: Duration,
 }
 
+/// What the screen calls the machine it runs on and the upstream server it takes ledgers from, set once at start:
+/// XRPL_WATCH_HOST, else this machine's hostname; XRPL_WATCH_UPSTREAM, else from the upstream's RPC address (a
+/// private IPv4 address shows as "." and its last number, a loopback one as "the upstream", anything else as its host).
+static HOST_NAME: OnceLock<String> = OnceLock::new();
+static UPSTREAM_NAME: OnceLock<String> = OnceLock::new();
+fn host_name() -> &'static str {
+    HOST_NAME.get().map(String::as_str).unwrap_or("this machine")
+}
+fn up_name() -> &'static str {
+    UPSTREAM_NAME.get().map(String::as_str).unwrap_or("the upstream")
+}
+fn upstream_name(url: &str) -> String {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let h = rest.split(['/', '?']).next().unwrap_or("");
+    let h = if h.starts_with('[') { h.split(']').next().unwrap_or("").trim_start_matches('[') } else { h.split(':').next().unwrap_or("") };
+    match h.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) if ip.is_private() => format!(".{}", ip.octets()[3]),
+        Ok(ip) if ip.is_loopback() => "the upstream".to_string(),
+        _ if h.is_empty() || h == "localhost" => "the upstream".to_string(),
+        _ => h.to_string(),
+    }
+}
+
 impl Cfg {
     fn from_env() -> Self {
         let validator = validator_proc();
@@ -138,6 +162,9 @@ impl Cfg {
             .or_else(|| validator.as_ref().and_then(|p| p.env("XRPL_RPC_URL")))
             .map(|v| v.split(',').next().unwrap_or("").to_string())
             .unwrap_or_else(|| "http://localhost:5005".to_string());
+        let hostname = || fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
+        let _ = HOST_NAME.set(env("XRPL_WATCH_HOST").or_else(hostname).unwrap_or_else(|| "this machine".to_string()));
+        let _ = UPSTREAM_NAME.set(env("XRPL_WATCH_UPSTREAM").unwrap_or_else(|| upstream_name(&upstream)));
         let receipts = env("SHADOW_RECEIPTS")
             .or_else(|| validator.as_ref().and_then(|p| p.env("XRPL_NATIVE_SHADOW_LOG")))
             .unwrap_or_else(|| "/mnt/xrpl-data/native_shadow.jsonl".to_string());
@@ -234,7 +261,7 @@ struct Snap {
     net: network::Net,
     /// The GOVERNANCE page: the upstream's whole `feature` answer (every amendment), re-read each minute.
     features: Value,
-    /// The DEPLOYS page (and the SYSTEM and NETWORK pages' .39 and outside panels): .39's feed, and our own name.
+    /// The DEPLOYS page (and the SYSTEM and NETWORK pages' upstream and outside panels): the upstream's feed, and our own name.
     feed: deploys::Feed,
     at: Option<SystemTime>,
 }
@@ -626,7 +653,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
         } else {
             sn.net = prev_net;
         }
-        // .39's feed (pushed each minute) and our own name, every 5 s.
+        // The upstream's feed (pushed each minute) and our own name, every 5 s.
         let prev_feed = prev.as_ref().map(|p| p.feed.clone()).unwrap_or_default();
         if feed_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
             sn.feed = deploys::read(&cfg, &prev_feed);
@@ -658,7 +685,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
             None => {
                 // Seed with the sync log's history. Who wrote those ledgers is known only when the writer's counters
                 // leave no doubt: with no refusal, retry or failure since its copy loaded, the last `native` ledgers
-                // were the Rust engine's and the `unready` ones before them .39's (the loading window).
+                // were the Rust engine's and the `unready` ones before them the upstream's (the loading window).
                 let ns = &sn.eng["native_shadow"];
                 let (wn, wu) = (u(ns, &["writer", "native"]), u(ns, &["writer", "unready"]));
                 let clean = b(ns, &["writer", "enabled"])
@@ -765,9 +792,9 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
             let Ok(d) = serde_json::from_str::<Value>(&ln) else { continue };
             let seq = d["seq"].as_u64().unwrap_or(0);
             let (tone, text) = if d.get("breaker").is_some() {
-                (Tone::Bad, format!("WRITER BREAKER at #{seq}: repeated hash failures — .39 writes until restart"))
+                (Tone::Bad, format!("WRITER BREAKER at #{seq}: repeated hash failures — {} writes until restart", up_name()))
             } else if d.get("mismatch").is_some() {
-                (Tone::Bad, format!("#{seq}: our bytes failed the state hash — rolled back, redone from .39"))
+                (Tone::Bad, format!("#{seq}: our bytes failed the state hash — rolled back, redone from {}", up_name()))
             } else if let Some(why) = d["refused"].as_str() {
                 (Tone::Warn, format!("#{seq}: the engine could not vouch — {}", why.chars().take(90).collect::<String>()))
             } else {
@@ -822,7 +849,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
                 );
             }
             if !hydrated && b(&p.eng, &["native_shadow", "hydrated"]) {
-                push_ev(&mut g, Tone::Warn, "the Rust engine dropped its copy of the state — reloading; .39 writes meanwhile".to_string());
+                push_ev(&mut g, Tone::Warn, format!("the Rust engine dropped its copy of the state — reloading; {} writes meanwhile", up_name()));
             }
             let wn = u(&sn.eng, &["native_shadow", "writer", "native"]);
             let wn0 = u(&p.eng, &["native_shadow", "writer", "native"]);
@@ -1064,7 +1091,7 @@ const PAGES: [(Page, char, &str, &str); 8] = [
     (Page::Main, '1', "Main", "the ledger tape, who writes the ledger, signing, the engine"),
     (Page::Independence, 'i', "Independence", "the road to a validator that needs no one else"),
     (Page::Receipts, 'r', "Receipts", "every difference since the validator started, fixed or open"),
-    (Page::System, 's', "System", "m3060 and the validator process, and .39 that feeds it"),
+    (Page::System, 's', "System", "{host} and the validator process, and {up} that feeds it"),
     (Page::Network, 'n', "Network", "peers, the upstream, consensus, how the world sees us"),
     (Page::Governance, 'g', "Governance", "amendments: majorities, votes, what we are ready for"),
     (Page::Deploys, 'd', "Deploys", "what is live, the soak, the next cycle, what waits on you"),
@@ -1170,10 +1197,10 @@ fn draw_header(f: &mut Frame, r: Rect, sn: &Snap) {
     };
     let stage = match w {
         Writer::RustWriting => Span::styled(" ★ STAGE 4 · RUST ENGINE WRITES THE LEDGER ", Style::new().fg(p.bg).bg(p.rust).add_modifier(Modifier::BOLD)),
-        Writer::RustLoading => Span::styled(" STAGE 4 · Rust engine loading — .39 writes meanwhile ", Style::new().fg(p.bg).bg(p.warn).add_modifier(Modifier::BOLD)),
+        Writer::RustLoading => Span::styled(format!(" STAGE 4 · Rust engine loading — {} writes meanwhile ", up_name()), Style::new().fg(p.bg).bg(p.warn).add_modifier(Modifier::BOLD)),
         Writer::RustBreaker => Span::styled(" STAGE 4 · WRITER OFF (breaker) ", Style::new().fg(Color::White).bg(p.bad).add_modifier(Modifier::BOLD)),
         Writer::Cpp => Span::styled(" ★ STAGE 3 · the C++ core writes ", Style::new().fg(p.bg).bg(p.cpp).add_modifier(Modifier::BOLD)),
-        Writer::Upstream => Span::styled(" shadow mode · .39's bytes are written ", Style::new().fg(p.bg).bg(p.dim)),
+        Writer::Upstream => Span::styled(format!(" shadow mode · {}'s bytes are written ", up_name()), Style::new().fg(p.bg).bg(p.dim)),
     };
     let ledger = u(&sn.eng, &["ledger_seq"]);
     let up_secs = sn.at.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -1183,7 +1210,7 @@ fn draw_header(f: &mut Frame, r: Rect, sn: &Snap) {
     spans.extend(logo_spans(sn.at));
     spans.extend([
         Span::styled(" ◥◣ ", Style::new().fg(p.pink).add_modifier(Modifier::BOLD)),
-        dim("m3060 "),
+        dim(format!("{} ", host_name())),
         bold(format!("#{}", commas(ledger)), p.ink),
         dim(format!(" · up {} ", dur(up_secs / 1000))),
         stage,
@@ -1232,7 +1259,7 @@ fn draw_tape(f: &mut Frame, r: Rect, g: &Shared) {
             dim(" — one column per ledger, newest at the right: "),
             sp("█ Rust wrote", p.rust),
             dim(" · "),
-            sp("█ .39 wrote", p.feed),
+            sp(format!("█ {} wrote", up_name()), p.feed),
             dim(" · "),
             sp("█ C++ wrote", p.cpp),
             dim(" · "),
@@ -1292,7 +1319,7 @@ fn draw_roles(f: &mut Frame, r: Rect, g: &Shared) {
     let rust = match w {
         Writer::RustWriting => vec![bold("● ACTIVELY WRITING", p.rust), sp(format!(" · {:.1}% since it loaded", pct(wn, since_load)), p.rust)],
         Writer::RustLoading => vec![bold("◌ LOADING its copy of the state", p.warn), dim("  — writes when loaded")],
-        Writer::RustBreaker => vec![bold("✗ OFF — breaker tripped", p.bad), dim("  — .39 writes until restart")],
+        Writer::RustBreaker => vec![bold("✗ OFF — breaker tripped", p.bad), dim(format!("  — {} writes until restart", up_name()))],
         _ if b(ns, &["enabled"]) => vec![sp("○ checking beside the writer", p.rust), dim("  — its bytes are not written")],
         _ => vec![dim("— not running")],
     };
@@ -1321,7 +1348,7 @@ fn draw_roles(f: &mut Frame, r: Rect, g: &Shared) {
     let lines = vec![
         Line::from([vec![bold("Rust engine (ours)    ", p.rust)], rust].concat()),
         Line::from([vec![bold(format!("C++ libxrpl {ver:<10}"), p.cpp)], cpp].concat()),
-        Line::from([vec![bold(format!("xrpld .39 {net:<12}"), p.feed)], feed].concat()),
+        Line::from([vec![bold(format!("xrpld {} {net:<12}", up_name()), p.feed)], feed].concat()),
         Line::from(""),
         Line::from(strip),
     ];
@@ -1501,7 +1528,7 @@ fn draw_rust(f: &mut Frame, r: Rect, g: &Shared) {
         ]));
         lines.push(Line::from(vec![
             label(""),
-            dim(format!("from .39: loading {} · ", commas(wu))),
+            dim(format!("from {}: loading {} · ", up_name(), commas(wu))),
             sp(format!("disagreed {}", commas(wr)), if wr > 0 { p.warn } else { p.good }),
             dim(format!(" · retries {} · ", commas(wd))),
             sp(format!("hash failures {wm}"), if wm > 0 { p.bad } else { p.good }),
@@ -1529,7 +1556,7 @@ fn draw_rust(f: &mut Frame, r: Rect, g: &Shared) {
                 label(""),
                 dim("receipts this soak "),
                 sp(commas(n as u64), if n == 0 { p.good } else { p.warn }),
-                dim(format!(" (Rust vs C++, triaged on .39{age})")),
+                dim(format!(" (Rust vs C++, triaged on {}{age})", up_name())),
                 if c > 0 { dim(format!(" · {c} canary")) } else { dim("") },
             ]));
         }
@@ -1561,7 +1588,7 @@ fn draw_rust(f: &mut Frame, r: Rect, g: &Shared) {
         label("last"),
         match &sn.last_decision {
             // A refusal whose cause has shipped reads as settled, with its age: an old, fixed event must not
-            // look like a live problem (James, 2026-10-13).
+            // look like a live problem (the operator, 2026-10-13).
             Some((at, seq, _, Some(fix))) => {
                 let age = SystemTime::now().duration_since(*at).map(|d| d.as_secs()).unwrap_or(0);
                 sp(format!("{} #{seq} — FIXED: {fix} · {} ago", hhmmss(*at), ago(age)), p.good)
@@ -1750,7 +1777,7 @@ fn draw_ticker(f: &mut Frame, r: Rect, g: &Shared) {
 fn draw_upstream(f: &mut Frame, r: Rect, sn: &Snap) {
     let p = pal();
     let w = writer_mode(sn);
-    let title = if w == Writer::Upstream { "UPSTREAM xrpld .39 — WRITING (RPC bytes)" } else { "UPSTREAM xrpld .39 — DATA FEED · AMENDMENTS" };
+    let title = if w == Writer::Upstream { format!("UPSTREAM xrpld {} — WRITING (RPC bytes)", up_name()) } else { format!("UPSTREAM xrpld {} — DATA FEED · AMENDMENTS", up_name()) };
     let block = panel(vec![bold(title, p.feed), dim(" [RIPPLED]")], p.feed);
     let mut lines: Vec<Line> = Vec::new();
     if let Some(e) = &sn.up_err {
@@ -1786,7 +1813,7 @@ fn draw_upstream(f: &mut Frame, r: Rect, sn: &Snap) {
             label("activates"),
             bold(format!("{name:<22}"), p.gold),
             sp(format!(" in {:>8}", dur(*eta)), p.warn),
-            dim(if *supported { "  · the network's node supports it" } else { "  · NOT supported by .39" }),
+            dim(if *supported { "  · the network's node supports it".to_string() } else { format!("  · NOT supported by {}", up_name()) }),
         ]));
     }
     f.render_widget(Paragraph::new(lines).block(block), r);
@@ -1908,6 +1935,7 @@ fn draw_menu(f: &mut Frame, sel: usize, page: Page) {
     let nw = PAGES.iter().map(|(_, _, name, _)| name.chars().count()).max().unwrap_or(0) + 2;
     let mut lines = vec![Line::from("")];
     for (i, (pg, key, name, what)) in PAGES.iter().enumerate() {
+        let what = what.replace("{host}", host_name()).replace("{up}", up_name());
         let here = if *pg == page { "  ◆ here" } else { "" };
         lines.push(if i == sel {
             let st = Style::new().fg(p.bg).bg(p.feed).add_modifier(Modifier::BOLD);

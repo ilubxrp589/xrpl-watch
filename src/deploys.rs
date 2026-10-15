@@ -1,14 +1,14 @@
 //! The DEPLOYS page (key `d`): which build is live and what it calls itself, how its soak is going, what the next
-//! cycle carries and how far its tests have got, any Yes/No waiting on James's tap, and the last deploys.
-//! The cycle, the soak and the taps live on .39: ~/xrpl-ops/tui_feed.py gathers them each minute into
-//! /mnt/xrpl-data/tui_feed.json (with .39's disk wear and the outside agreement scores the SYSTEM and NETWORK pages
+//! cycle carries and how far its tests have got, any Yes/No waiting on the operator's tap, and the last deploys.
+//! The cycle, the soak and the taps live on the upstream server: its feed script gathers them each minute into
+//! /mnt/xrpl-data/tui_feed.json (with the upstream's disk wear and the outside agreement scores the SYSTEM and NETWORK pages
 //! show). The name comes from the validator itself (its /crawl).
 
 use super::*;
 
 #[derive(Clone, Default)]
 pub struct Feed {
-    /// .39's feed, Null until it has been read.
+    /// The upstream's feed, Null until it has been read.
     pub v: Value,
     /// What the validator calls itself on the network (its /crawl `build_version`).
     pub version: Option<String>,
@@ -40,13 +40,13 @@ pub fn age(fd: &Feed) -> Option<u64> {
     fd.v["at"].as_f64().map(|a| (now_s() - a).max(0.0) as u64)
 }
 
-/// A line saying the feed is late, or nothing while it is fresh (.39 pushes it every minute).
+/// A line saying the feed is late, or nothing while it is fresh (the upstream pushes it every minute).
 pub fn late(fd: &Feed) -> Option<Line<'static>> {
     let p = pal();
     match age(fd) {
-        None if !fd.read => Some(Line::from(dim(" waiting for .39's feed (tui_feed.json) …"))),
+        None if !fd.read => Some(Line::from(dim(format!(" waiting for {}'s feed (tui_feed.json) …", up_name())))),
         None => None,
-        Some(a) if a > 180 => Some(Line::from(sp(format!(" .39's feed is {} old: its xrpl-tui-feed timer may have stopped", ago(a)), p.warn))),
+        Some(a) if a > 180 => Some(Line::from(sp(format!(" {}'s feed is {} old: its xrpl-tui-feed timer may have stopped", up_name(), ago(a)), p.warn))),
         _ => None,
     }
 }
@@ -118,7 +118,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     if let Some(l) = late(fd) {
         lines.push(l);
     }
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("LIVE NOW", p.good), dim(" · the build signing on m3060")], p.good)), top[0]);
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("LIVE NOW", p.good), dim(format!(" · the build signing on {}", host_name()))], p.good)), top[0]);
 
     // The soak.
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -165,7 +165,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         }
         lines.push(Line::from(dim(" A day with no receipts is a clean soak; a new deploy starts a new soak.")));
     } else {
-        lines.push(Line::from(dim(" no soak found in .39's soak.log")));
+        lines.push(Line::from(dim(format!(" no soak found in {}'s soak.log", up_name()))));
     }
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE SOAK", p.feed), dim(" · a day of watching after each deploy")], p.feed)), top[1]);
 
@@ -211,7 +211,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     }
     f.render_widget(Paragraph::new(lines).block(panel(title, p.violet)), mid[0]);
 
-    // Waiting on James.
+    // Waiting on the operator.
     let taps = v["taps"].as_array().cloned().unwrap_or_default();
     let mut lines: Vec<Line<'static>> = Vec::new();
     if taps.is_empty() {
@@ -275,6 +275,6 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     if hist.is_empty() {
         lines.push(Line::from(dim(" no deploys in the feed yet")));
     }
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE LAST DEPLOYS", p.gold), dim(" · newest first, from .39's soak log")], p.gold)), rows[3]);
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE LAST DEPLOYS", p.gold), dim(format!(" · newest first, from {}'s soak log", up_name()))], p.gold)), rows[3]);
     draw_footer(f, rows[4], sn, paused);
 }

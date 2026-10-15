@@ -1,7 +1,7 @@
 //! The SYSTEM page (key `s`): the machine the validator runs on — its CPU, memory, disks, temperature and network,
 //! and the validator process inside it. From the host sidecar beside the validator (:3779 /metrics every 2 s, /host
-//! every minute) and the kernel's own sensors; nothing here asks the validator anything. Below them, .39 (the server
-//! every ledger still comes from), from .39's feed (deploys.rs).
+//! every minute) and the kernel's own sensors; nothing here asks the validator anything. Below them, the upstream (the server
+//! every ledger still comes from), from the upstream's feed (deploys.rs).
 
 use super::*;
 
@@ -162,7 +162,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     if !sy.read {
         lines.push(Line::from(dim(" reading the host …")));
     }
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE MACHINE", p.feed), dim(" · m3060, where the validator runs")], p.feed)), top[0]);
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE MACHINE", p.feed), dim(format!(" · {}, where the validator runs", host_name()))], p.feed)), top[0]);
 
     // The validator process.
     let vcpu = last(&sy.vcpu, 10.0);
@@ -213,7 +213,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     draw_footer(f, rows[4], sn, paused);
 }
 
-/// .39, where every ledger the validator processes still comes from: its disks' wear (the root xrpl-diskhealth
+/// The upstream, where every ledger the validator processes still comes from: its disks' wear (the root xrpl-diskhealth
 /// timer reads SMART every 6 h), its memory and load (memory pressure there has stopped the validator before), its
 /// xrpld (the upstream's own answer) and how often the validator fell back to the public server this soak.
 fn draw_feed39(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
@@ -281,7 +281,7 @@ fn draw_feed39(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
         lines.push(l);
     }
     f.render_widget(
-        Paragraph::new(lines).block(panel(vec![bold(".39 · THE FEED", p.cpp), dim(" · every ledger the validator processes still comes from here")], p.cpp)),
+        Paragraph::new(lines).block(panel(vec![bold(format!("{} · THE FEED", up_name()), p.cpp), dim(" · every ledger the validator processes still comes from here")], p.cpp)),
         r,
     );
 }

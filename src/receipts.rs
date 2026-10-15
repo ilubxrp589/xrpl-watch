@@ -280,7 +280,7 @@ fn item(source: usize, kind: Kind, v: &Value) -> Option<Item> {
             if v.get("failed").is_some() {
                 "no peer gave us the whole ledger in time".to_string()
             } else {
-                format!("the peers' copy differed from .39's: {}", clip(&v["differ"].to_string(), 60))
+                format!("the peers' copy differed from {}'s: {}", up_name(), clip(&v["differ"].to_string(), 60))
             }
         }
         Kind::Validated => {

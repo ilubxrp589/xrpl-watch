@@ -1,6 +1,6 @@
 //! The NETWORK page (key `n`): who the validator talks to — its peers and their software, the upstream server it
 //! still takes ledgers from, the consensus it watches, and the validations and peer ledgers of independence step 4.
-//! Peer addresses are never shown. At the bottom, how the public trackers score the validator (from .39's feed).
+//! Peer addresses are never shown. At the bottom, how the public trackers score the validator (from the upstream's feed).
 
 use super::*;
 
@@ -113,14 +113,14 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     if !net.read {
         lines.push(Line::from(dim(" reading the peers …")));
     }
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("OUR PEERS", p.feed), dim(" · the servers m3060 is connected to (addresses not shown)")], p.feed)), top[0]);
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("OUR PEERS", p.feed), dim(format!(" · the servers {} is connected to (addresses not shown)", host_name()))], p.feed)), top[0]);
 
     // The upstream server.
     let up = &sn.up;
     let state = s(up, &["server_state"]);
     let sc = if state == "full" || state == "proposing" { p.good } else { p.warn };
     let mut lines = vec![
-        kv("server", vec![ink(".39"), dim(format!(" · xrpld {}", s(up, &["build_version"])))]),
+        kv("server", vec![ink(up_name()), dim(format!(" · xrpld {}", s(up, &["build_version"])))]),
         kv("state", vec![bold(state.to_string(), sc), dim(if state == "full" { " · in sync with the network" } else { "" })]),
         kv("its peers", vec![ink(commas(u(up, &["peers"])))]),
         kv("its ledgers", vec![dim(s(up, &["complete_ledgers"]).to_string())]),
@@ -130,7 +130,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         lines.push(kv("error", vec![sp(e.chars().take(60).collect::<String>(), p.bad)]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(dim(" Today every ledger the validator processes comes from .39. Step 4 checks each one against our peers;")));
+    lines.push(Line::from(dim(format!(" Today every ledger the validator processes comes from {}. Step 4 checks each one against our peers;", up_name()))));
     lines.push(Line::from(dim(" step 4.3 makes the peers the source.")));
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE UPSTREAM", p.cpp), dim(" · the stock server we still take ledgers from")], p.cpp)), top[1]);
 
@@ -152,10 +152,10 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let fetched = u(pf, &["fetched"]).max(1);
     let lines = vec![
         kv("validations", vec![ink(commas(u(ov, &["validations"]))), dim(" heard · "), ink(commas(u(ov, &["untrusted"]))), dim(" from servers not on our list")]),
-        kv("our quorum", vec![bold(commas(u(ov, &["agree"])), p.good), dim(format!(" ledgers called validated as .39 did · quorum {} of {}", u(ov, &["quorum"]), u(ov, &["unl"])))]),
+        kv("our quorum", vec![bold(commas(u(ov, &["agree"])), p.good), dim(format!(" ledgers called validated as {} did · quorum {} of {}", up_name(), u(ov, &["quorum"]), u(ov, &["unl"])))]),
         kv("", vec![dim("differ "), bold(commas(u(ov, &["differ"])), if u(ov, &["differ"]) == 0 { p.good } else { p.bad }), dim(" · short "), bold(commas(u(ov, &["short"])), if u(ov, &["short"]) == 0 { p.good } else { p.bad })]),
         Line::from(""),
-        kv("peer ledgers", vec![bold(commas(u(pf, &["matched"])), p.good), dim(format!(" of {} fetched from peers matched .39's", commas(u(pf, &["fetched"]))))]),
+        kv("peer ledgers", vec![bold(commas(u(pf, &["matched"])), p.good), dim(format!(" of {} fetched from peers matched {}'s", commas(u(pf, &["fetched"])), up_name()))]),
         kv("", vec![dim(format!("{:.1} requests a ledger · {} peers to ask · {} ms for the last", u(pf, &["requests"]) as f64 / fetched as f64, u(pf, &["peers"]), u(pf, &["ms_last"])))]),
     ];
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("VALIDATIONS · PEER LEDGERS", p.gold), dim(" · step 4, in shadow")], p.gold)), low[1]);
@@ -164,7 +164,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
 }
 
 /// How the rest of the network sees the validator: data.xrpl.org's agreement scores for our master key (xrpscan if
-/// it is down), fetched by .39's feed at most every ten minutes. Everything else on this page is our own view.
+/// it is down), fetched by the upstream's feed at most every ten minutes. Everything else on this page is our own view.
 fn draw_world(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
     let p = pal();
     let w = &sn.feed.v["world"];
@@ -229,7 +229,7 @@ fn draw_world(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
         let stale = if w["stale"].as_bool() == Some(true) { " · the last fetch failed, these are older" } else { "" };
         lines.push(Line::from(dim(format!(" from {} · checked {ago_s} ago{stale}", s(w, &["source"])))));
     } else {
-        lines.push(Line::from(dim(" waiting for .39's feed to fetch the outside scores …")));
+        lines.push(Line::from(dim(format!(" waiting for {}'s feed to fetch the outside scores …", up_name()))));
     }
     if let Some(l) = deploys::late(&sn.feed) {
         lines.push(l);

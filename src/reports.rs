@@ -1,7 +1,7 @@
 //! The DAILY REPORTS page (key `l`, for log): the daily engineering reports, newest first. ↑ ↓ (or j k) pick a day
 //! and Enter (or →) opens it; in a report ↑ ↓ PgUp PgDn Space scroll, Home / End jump, Esc (or ← or Backspace) goes
-//! back to the list. The reports are the public ilubxrp589/xrpl-validator-reports, written on .39 each night at 00:20
-//! (~/xrpl-ops/daily_report); the same job copies their .md files to /mnt/xrpl-data/daily-reports/ here (env
+//! back to the list. The reports are the public ilubxrp589/xrpl-validator-reports, written on the upstream server each night at 00:20
+//! by the nightly report job; the same job copies their .md files to /mnt/xrpl-data/daily-reports/ here (env
 //! DAILY_REPORTS overrides). View only.
 
 use super::*;
@@ -338,7 +338,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         let msg = vec![
             Line::from(""),
             Line::from(dim(format!(" No reports in {} yet.", dir().display()))),
-            Line::from(dim(" The nightly report job on .39 copies them here after it writes each day's report (00:20).")),
+            Line::from(dim(format!(" The nightly report job on {} copies them here after it writes each day's report (00:20).", up_name()))),
         ];
         f.render_widget(Paragraph::new(msg).block(panel(vec![bold("DAILY REPORTS", p.gold)], p.gold)), rows[1]);
         draw_footer(f, rows[2], &g.snap, paused);

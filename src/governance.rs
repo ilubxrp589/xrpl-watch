@@ -1,6 +1,6 @@
 //! The GOVERNANCE page (key `g`): the network's amendments — what is on, what has a majority and when it switches
-//! on, what is still off and how this validator and .39 vote, and which our own engine is ready for. View only:
-//! a change to the votes goes to James as a Telegram tap.
+//! on, what is still off and how this validator and the upstream vote, and which our own engine is ready for. View only:
+//! a change to the votes goes to the operator as a Telegram tap.
 
 use super::*;
 
@@ -73,7 +73,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
             bold(format!("{name:<30}"), p.gold),
             ink(format!("{:<18}", left(*secs))),
             if ready { bold("our engine ready", p.good) } else { bold("our engine NOT ready", p.bad) },
-            dim(if *supported { " · .39 supports it" } else { " · .39 doesn't support it" }),
+            dim(if *supported { format!(" · {} supports it", up_name()) } else { format!(" · {} doesn't support it", up_name()) }),
         ]));
     }
     if lines.is_empty() {
@@ -86,7 +86,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     // Not enabled yet.
     let mut off: Vec<&Value> = all.iter().copied().filter(|f| !f["enabled"].as_bool().unwrap_or(false)).collect();
     off.sort_by_key(|f| f["name"].as_str().unwrap_or("").to_string());
-    let mut lines = vec![Line::from(vec![dim(format!(" {:<30}{:<16}{:<14}{}", "amendment", ".39 votes", "we vote", "majority"))])];
+    let mut lines = vec![Line::from(vec![dim(format!(" {:<30}{:<16}{:<14}{}", "amendment", format!("{} votes", up_name()), "we vote", "majority"))])];
     for f in off {
         let name = f["name"].as_str().unwrap_or("?").to_string();
         let up_vote = match &f["vetoed"] {
@@ -103,7 +103,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
             if f["majority"].is_number() { bold("yes", p.warn) } else { dim("no") },
         ]));
     }
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("NOT ENABLED YET", p.violet), dim(" · and how .39 and our validator vote")], p.violet)), low[0]);
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("NOT ENABLED YET", p.violet), dim(format!(" · and how {} and our validator vote", up_name()))], p.violet)), low[0]);
 
     // Our readiness.
     let mut lines: Vec<Line<'static>> = Vec::new();

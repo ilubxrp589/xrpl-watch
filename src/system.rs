@@ -1,6 +1,7 @@
 //! The SYSTEM page (key `s`): the machine the validator runs on — its CPU, memory, disks, temperature and network,
 //! and the validator process inside it. From the host sidecar beside the validator (:3779 /metrics every 2 s, /host
-//! every minute) and the kernel's own sensors; nothing here asks the validator anything.
+//! every minute) and the kernel's own sensors; nothing here asks the validator anything. Below them, .39 (the server
+//! every ledger still comes from), from .39's feed (deploys.rs).
 
 use super::*;
 
@@ -208,7 +209,76 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     lines.push(kv("net in", vec![trend(&sy.net_in, sw, p.feed), bold(format!(" {:.2} MB/s", last(&sy.net_in, 100.0)), p.feed)]));
     lines.push(kv("net out", vec![trend(&sy.net_out, sw, p.pink), bold(format!(" {:.2} MB/s", last(&sy.net_out, 100.0)), p.pink)]));
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("TEMPERATURE · NETWORK", p.pink)], p.pink)), low[1]);
+    draw_feed39(f, rows[3], sn, bw);
     draw_footer(f, rows[4], sn, paused);
+}
+
+/// .39, where every ledger the validator processes still comes from: its disks' wear (the root xrpl-diskhealth
+/// timer reads SMART every 6 h), its memory and load (memory pressure there has stopped the validator before), its
+/// xrpld (the upstream's own answer) and how often the validator fell back to the public server this soak.
+fn draw_feed39(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
+    let p = pal();
+    let h39 = &sn.feed.v["host39"];
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for d in h39["drives"].as_array().into_iter().flatten() {
+        let used = d["life_used_pct"].as_f64().unwrap_or(0.0);
+        let mount = d["mounts_pct_full"].as_object().and_then(|m| m.iter().next()).map(|(k, v)| (k.clone(), v.as_f64().unwrap_or(0.0)));
+        let name = match mount.as_ref().map(|m| m.0.as_str()) {
+            Some("/mnt/xrpl-data") => "ledger SSD".to_string(),
+            Some("/") => "system SSD".to_string(),
+            _ => s(d, &["dev"]).to_string(),
+        };
+        let c = level(used, 60.0, 80.0);
+        let mut l = meter(used / 100.0, bw.saturating_sub(12).max(8), c);
+        l.push(bold(format!(" {used:.0}% worn"), c));
+        let mut tail = String::new();
+        if let Some(m) = d["months_left_estimate"].as_f64() {
+            tail += &format!(" · about {m:.1} months left at this pace");
+        }
+        tail += &format!(" · {:.0} GB written a day · {:.0} TB in all", d["gb_per_day_now"].as_f64().unwrap_or(0.0), d["written_tb"].as_f64().unwrap_or(0.0));
+        if let Some((_, full)) = &mount {
+            tail += &format!(" · {full:.0}% full");
+        }
+        if let Some(t) = d["temperature_c"].as_f64() {
+            tail += &format!(" · {t:.0} °C");
+        }
+        l.push(dim(tail));
+        lines.push(kv(&name, l));
+    }
+    let mem = &h39["mem"];
+    let (tot, avail) = (u(mem, &["MemTotal"]) as f64 / 1e9, u(mem, &["MemAvailable"]) as f64 / 1e9);
+    if tot > 0.0 {
+        let used = (tot - avail) / tot;
+        let swap = u(mem, &["SwapTotal"]).saturating_sub(u(mem, &["SwapFree"])) as f64 / 1e9;
+        let load: Vec<String> = h39["load"].as_array().into_iter().flatten().filter_map(|x| x.as_f64()).map(|x| format!("{x:.2}")).collect();
+        let mut l = meter(used, bw.saturating_sub(12).max(8), level(used, 0.8, 0.92));
+        l.push(dim(format!(" {:.0} of {tot:.0} GB used · swap {swap:.1} GB · load {} on {} cores", tot - avail, load.join(" · "), u(h39, &["cores"]))));
+        lines.push(kv("memory", l));
+    }
+    let up = &sn.up;
+    let state = s(up, &["server_state"]).to_string();
+    lines.push(kv("xrpld", vec![
+        bold(if state.is_empty() { "unreachable".to_string() } else { state.clone() }, if state == "full" { p.good } else { p.bad }),
+        dim(format!(" · ledgers {} · validated {} s ago", s(up, &["complete_ledgers"]), u(up, &["validated_ledger", "age"]))),
+    ]));
+    let soak = &sn.feed.v["soak"];
+    if !soak["failovers"].is_null() {
+        let (fo, st) = (u(soak, &["failovers"]), u(soak, &["fallback_stints"]));
+        lines.push(kv("failovers", vec![
+            bold(format!("{fo}"), if fo == 0 { p.good } else { p.warn }),
+            dim(format!(" to the public server this soak · {st} stints on it (the 3-hourly check)")),
+        ]));
+    }
+    if let Some(at) = h39["disk_at"].as_str() {
+        lines.push(Line::from(dim(format!(" disk wear read {} (SMART, every 6 h) · the rest each minute", at.get(5..16).unwrap_or(at).replace('T', " ")))));
+    }
+    if let Some(l) = deploys::late(&sn.feed) {
+        lines.push(l);
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(panel(vec![bold(".39 · THE FEED", p.cpp), dim(" · every ledger the validator processes still comes from here")], p.cpp)),
+        r,
+    );
 }
 
 fn clip_mount(m: &str) -> String {

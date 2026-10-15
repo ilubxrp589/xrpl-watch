@@ -21,10 +21,11 @@
 //!   xrpl-watch --record DIR [--frames N] [--interval S] [--size WxH]
 //!                                      N frames, one every S seconds, as DIR/frame_00001.ans … (for videos);
 //!                                      --fps F records F frames a second while the data is read every S
-//!   --page independence                start --once / --record (or the live screen) on the INDEPENDENCE page
+//!   --page NAME                        start --once / --record (or the live screen) on a page: independence,
+//!                                      receipts, system, network, governance or deploys
 //!   --basic                            16 colours instead of 24-bit (old terminals)
-//!   keys: q quit · p pause · i the INDEPENDENCE page (the road to a fully independent validator) · 1 the main
-//!         screen · Tab flips between them
+//!   keys: q quit · p pause · 1 the main screen · i INDEPENDENCE · r RECEIPTS · s SYSTEM · n NETWORK · g GOVERNANCE
+//!         · d DEPLOYS · Tab the next page
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -47,6 +48,7 @@ mod receipts;
 mod system;
 mod network;
 mod governance;
+mod deploys;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Palette: HALCYON synthwave (24-bit), or the 16 terminal colours with --basic
@@ -228,6 +230,8 @@ struct Snap {
     net: network::Net,
     /// The GOVERNANCE page: the upstream's whole `feature` answer (every amendment), re-read each minute.
     features: Value,
+    /// The DEPLOYS page (and the SYSTEM and NETWORK pages' .39 and outside panels): .39's feed, and our own name.
+    feed: deploys::Feed,
     at: Option<SystemTime>,
 }
 
@@ -542,6 +546,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
     let mut rec_at: Option<Instant> = None;
     let mut sys_at: Option<Instant> = None;
     let mut net_at: Option<Instant> = None;
+    let mut feed_at: Option<Instant> = None;
     loop {
         let t0 = Instant::now();
         let mut sn = Snap::default();
@@ -616,6 +621,14 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
             net_at = Some(Instant::now());
         } else {
             sn.net = prev_net;
+        }
+        // .39's feed (pushed each minute) and our own name, every 5 s.
+        let prev_feed = prev.as_ref().map(|p| p.feed.clone()).unwrap_or_default();
+        if feed_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+            sn.feed = deploys::read(&cfg, &prev_feed);
+            feed_at = Some(Instant::now());
+        } else {
+            sn.feed = prev_feed;
         }
         let sig = fs::metadata(&cfg.receipts).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
         let stale = receipts_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(30));
@@ -1038,6 +1051,7 @@ enum Page {
     System,
     Network,
     Governance,
+    Deploys,
 }
 
 impl Page {
@@ -1048,6 +1062,7 @@ impl Page {
             Some("system") => Page::System,
             Some("network") => Page::Network,
             Some("governance") => Page::Governance,
+            Some("deploys") => Page::Deploys,
             _ => Page::Main,
         }
     }
@@ -1059,7 +1074,8 @@ impl Page {
             Page::Receipts => Page::System,
             Page::System => Page::Network,
             Page::Network => Page::Governance,
-            Page::Governance => Page::Main,
+            Page::Governance => Page::Deploys,
+            Page::Deploys => Page::Main,
         }
     }
 }
@@ -1071,6 +1087,7 @@ fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
         Page::System => return system::draw(f, g, paused),
         Page::Network => return network::draw(f, g, paused),
         Page::Governance => return governance::draw(f, g, paused),
+        Page::Deploys => return deploys::draw(f, g, paused),
         Page::Main => {}
     }
     let p = pal();
@@ -1831,7 +1848,7 @@ fn draw_ledger_mix(f: &mut Frame, r: Rect, sn: &Snap) {
 
 fn draw_footer(f: &mut Frame, r: Rect, sn: &Snap, paused: bool) {
     let p = pal();
-    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · s system · n network · g governance · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
+    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · s system · n network · g governance · d deploys · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
     if paused {
         v.push(bold("   ⏸ PAUSED", p.warn));
     }
@@ -2024,6 +2041,7 @@ fn main() -> io::Result<()> {
                             KeyCode::Char('s') => page = Page::System,
                             KeyCode::Char('n') => page = Page::Network,
                             KeyCode::Char('g') => page = Page::Governance,
+                            KeyCode::Char('d') => page = Page::Deploys,
                             KeyCode::Char('1') => page = Page::Main,
                             KeyCode::Tab => page = page.next(),
                             _ => {}

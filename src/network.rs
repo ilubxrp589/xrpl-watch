@@ -1,6 +1,6 @@
 //! The NETWORK page (key `n`): who the validator talks to — its peers and their software, the upstream server it
 //! still takes ledgers from, the consensus it watches, and the validations and peer ledgers of independence step 4.
-//! Peer addresses are never shown.
+//! Peer addresses are never shown. At the bottom, how the public trackers score the validator (from .39's feed).
 
 use super::*;
 
@@ -147,5 +147,83 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         kv("", vec![dim(format!("{:.1} requests a ledger · {} peers to ask · {} ms for the last", u(pf, &["requests"]) as f64 / fetched as f64, u(pf, &["peers"]), u(pf, &["ms_last"])))]),
     ];
     f.render_widget(Paragraph::new(lines).block(panel(vec![bold("VALIDATIONS · PEER LEDGERS", p.gold), dim(" · step 4, in shadow")], p.gold)), low[1]);
+    draw_world(f, rows[3], sn, bw);
     draw_footer(f, rows[4], sn, paused);
+}
+
+/// How the rest of the network sees the validator: data.xrpl.org's agreement scores for our master key (xrpscan if
+/// it is down), fetched by .39's feed at most every ten minutes. Everything else on this page is our own view.
+fn draw_world(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
+    let p = pal();
+    let w = &sn.feed.v["world"];
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if w.is_object() {
+        for (k, label) in [("agreement_1h", "1 hour"), ("agreement_24h", "24 hours"), ("agreement_30day", "30 days")] {
+            let a = &w[k];
+            let score = a["score"].as_str().and_then(|x| x.parse::<f64>().ok()).or_else(|| a["score"].as_f64()).unwrap_or(0.0);
+            let c = if score >= 0.99 { p.good } else if score >= 0.9 { p.warn } else { p.bad };
+            let mut l = vec![
+                bar((score * 1000.0).round() as u64, 1000, bw, c),
+                bold(format!(" {:.2}%", score * 100.0), c),
+                dim(format!(" · {} missed of {} ledgers", commas(u(a, &["missed"])), commas(u(a, &["total"])))),
+            ];
+            if a["incomplete"].as_bool() == Some(true) {
+                l.push(dim(" · the tracker marks this window incomplete"));
+            }
+            lines.push(kv(label, l));
+        }
+        lines.push(Line::from(dim(" missed: a ledger the network validated without a matching validation from us")));
+        // One block a day for the last 30 (UTC): green from 99%, amber from 90%, red below; dots where the tracker
+        // has no report for the day.
+        if let Some(days) = w["days"].as_array().filter(|d| !d.is_empty()) {
+            let mut l: Vec<Span<'static>> = Vec::new();
+            for d in days {
+                let c = match d[1].as_f64() {
+                    None => None,
+                    Some(sc) if sc >= 0.99 => Some(p.good),
+                    Some(sc) if sc >= 0.9 => Some(p.warn),
+                    Some(_) => Some(p.bad),
+                };
+                l.push(match c { Some(c) => sp("██ ", c), None => dim("·· ") });
+            }
+            let date = |d: &Value| d[0].as_str().and_then(|x| x.get(5..10)).unwrap_or("").to_string();
+            l.push(dim(format!(" {} → {}", date(&days[0]), date(&days[days.len() - 1]))));
+            lines.push(Line::from(""));
+            lines.push(kv("each day", l));
+            let worst = days.iter().filter(|d| d[1].as_f64().is_some() && d[3].as_u64().unwrap_or(0) > 0)
+                .min_by(|a, b| a[1].as_f64().unwrap_or(1.0).total_cmp(&b[1].as_f64().unwrap_or(1.0)));
+            let empty = days.iter().filter(|d| d[1].is_null()).count();
+            let mut note = vec![dim(format!("{empty} of {} days without a report", days.len()))];
+            if let Some(wd) = worst.filter(|wd| wd[1].as_f64().unwrap_or(1.0) < 0.99) {
+                note.push(dim(format!(" · lowest {} at {:.2}% ({} missed of {})", date(wd), wd[1].as_f64().unwrap_or(0.0) * 100.0, commas(wd[2].as_u64().unwrap_or(0)), commas(wd[3].as_u64().unwrap_or(0)))));
+            }
+            lines.push(kv("", note));
+        }
+        lines.push(Line::from(""));
+        let unl = match &w["unl"] {
+            Value::String(list) => vec![bold("yes", p.good), dim(format!(" · {list}"))],
+            Value::Bool(true) => vec![bold("yes", p.good)],
+            _ => vec![ink("no"), dim(" · not on a published list of trusted validators")],
+        };
+        lines.push(kv("on a UNL", unl));
+        let revoked = w["revoked"].as_bool().unwrap_or(false);
+        lines.push(kv("our key", vec![
+            ink(format!("{}…", s(w, &["signing_key"]).chars().take(12).collect::<String>())),
+            dim(" signing · "),
+            bold(if revoked { "REVOKED" } else { "not revoked" }, if revoked { p.bad } else { p.good }),
+            dim(format!(" · domain {}", s(w, &["domain"]))),
+        ]));
+        let ago_s = w["fetched"].as_f64().map(|t| ago((deploys::now_s() - t).max(0.0) as u64)).unwrap_or_default();
+        let stale = if w["stale"].as_bool() == Some(true) { " · the last fetch failed, these are older" } else { "" };
+        lines.push(Line::from(dim(format!(" from {} · checked {ago_s} ago{stale}", s(w, &["source"])))));
+    } else {
+        lines.push(Line::from(dim(" waiting for .39's feed to fetch the outside scores …")));
+    }
+    if let Some(l) = deploys::late(&sn.feed) {
+        lines.push(l);
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(panel(vec![bold("AS THE WORLD SEES US", p.pink), dim(" · the public trackers' scores for our validator")], p.pink)),
+        r,
+    );
 }

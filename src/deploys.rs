@@ -122,7 +122,15 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
 
     // The soak.
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if soak.is_object() {
+    // Between a deploy and its soak's start (the start-up checks, about 25 min) the last soak is the old build's.
+    let between = soak.is_object() && !live["cycle"].is_null() && u(soak, &["cycle"]) != u(live, &["cycle"]);
+    if between {
+        lines.push(kv("soak", vec![
+            bold(format!("#{}", u(soak, &["n"]) + 1), p.feed),
+            dim(format!(" · starts after cycle {}'s start-up checks (~25 min)", u(live, &["cycle"]))),
+        ]));
+        lines.push(kv("before it", vec![dim(format!("#{} watched cycle {} for {:.1} h", u(soak, &["n"]), u(soak, &["cycle"]), (now - soak["start_ts"].as_f64().unwrap_or(now)).max(0.0) / 3600.0))]));
+    } else if soak.is_object() {
         let (st, en) = (soak["start_ts"].as_f64().unwrap_or(now), soak["ends_ts"].as_f64().unwrap_or(now));
         let frac = ((now - st) / (en - st).max(1.0)).clamp(0.0, 1.0);
         let hours = u(soak, &["hours"]).max(1);
@@ -249,7 +257,8 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         let (end, c) = match h["verdict"].as_object() {
             Some(vd) if vd.get("clean").and_then(|x| x.as_bool()) == Some(true) => ("✓ clean, no receipts".to_string(), p.good),
             Some(vd) if vd.get("clean").and_then(|x| x.as_bool()) == Some(false) => (format!("✗ {}", receipts(vd.get("receipts").and_then(|x| x.as_u64()).unwrap_or(0))), p.bad),
-            _ if i == 0 => ("running".to_string(), p.feed),
+            _ if i == 0 && u(h, &["cycle"]) == u(live, &["cycle"]) => ("running".to_string(), p.feed),
+            _ if i == 0 => (format!("cut short by cycle {}", u(live, &["cycle"])), p.dim),
             _ if h["ran_h"].as_f64().unwrap_or(0.0) >= 24.0 => ("ran its day · no verdict recorded".to_string(), p.dim),
             _ => ("cut short by the next deploy".to_string(), p.dim),
         };

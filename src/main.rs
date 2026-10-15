@@ -22,11 +22,13 @@
 //!                                      N frames, one every S seconds, as DIR/frame_00001.ans … (for videos);
 //!                                      --fps F records F frames a second while the data is read every S
 //!   --page NAME                        start --once / --record (or the live screen) on a page: independence,
-//!                                      receipts, system, network, governance or deploys
+//!                                      receipts, system, network, governance, deploys or reports
+//!   --report DATE [--scroll N]         the daily-reports page with that day's report open (N lines down)
 //!   --menu                             --once / --record with the menu (key m) open over the page
 //!   --basic                            16 colours instead of 24-bit (old terminals)
 //!   keys: q quit · m the menu (every page, its key and what it shows) · Tab the next page · p pause; each page's
 //!         key opens it directly: 1 main · i independence · r receipts · s system · n network · g governance · d deploys
+//!         · l daily reports (↑ ↓ pick a day, Enter reads it, ↑ ↓ PgUp PgDn scroll, Esc back to the days)
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -50,6 +52,7 @@ mod system;
 mod network;
 mod governance;
 mod deploys;
+mod reports;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Palette: HALCYON synthwave (24-bit), or the 16 terminal colours with --basic
@@ -1053,10 +1056,11 @@ enum Page {
     Network,
     Governance,
     Deploys,
+    Reports,
 }
 
 /// Every page in the menu's order: the key that opens it, its name, and a line on what it shows.
-const PAGES: [(Page, char, &str, &str); 7] = [
+const PAGES: [(Page, char, &str, &str); 8] = [
     (Page::Main, '1', "Main", "the ledger tape, who writes the ledger, signing, the engine"),
     (Page::Independence, 'i', "Independence", "the road to a validator that needs no one else"),
     (Page::Receipts, 'r', "Receipts", "every difference since the validator started, fixed or open"),
@@ -1064,6 +1068,7 @@ const PAGES: [(Page, char, &str, &str); 7] = [
     (Page::Network, 'n', "Network", "peers, the upstream, consensus, how the world sees us"),
     (Page::Governance, 'g', "Governance", "amendments: majorities, votes, what we are ready for"),
     (Page::Deploys, 'd', "Deploys", "what is live, the soak, the next cycle, what waits on you"),
+    (Page::Reports, 'l', "Daily reports", "the log of every day's engineering report: pick a day, read it"),
 ];
 
 /// The page on screen, for the footer (set by `draw`).
@@ -1086,6 +1091,7 @@ impl Page {
             Some("network") => Page::Network,
             Some("governance") => Page::Governance,
             Some("deploys") => Page::Deploys,
+            Some("reports") => Page::Reports,
             _ => Page::Main,
         }
     }
@@ -1098,7 +1104,8 @@ impl Page {
             Page::System => Page::Network,
             Page::Network => Page::Governance,
             Page::Governance => Page::Deploys,
-            Page::Deploys => Page::Main,
+            Page::Deploys => Page::Reports,
+            Page::Reports => Page::Main,
         }
     }
 }
@@ -1112,6 +1119,7 @@ fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
         Page::Network => return network::draw(f, g, paused),
         Page::Governance => return governance::draw(f, g, paused),
         Page::Deploys => return deploys::draw(f, g, paused),
+        Page::Reports => return reports::draw(f, g, paused),
         Page::Main => {}
     }
     let p = pal();
@@ -2025,6 +2033,11 @@ fn main() -> io::Result<()> {
     }));
 
     let mut page = Page::from_arg(arg_value(&args, "--page").as_deref());
+    // --report DATE [--scroll N]: the reports page with that day open (for --once / --record)
+    if let Some(d) = arg_value(&args, "--report") {
+        page = Page::Reports;
+        reports::preset(Some(d), arg_value(&args, "--scroll").and_then(|v| v.parse().ok()).unwrap_or(0));
+    }
     let once = args.iter().any(|a| a == "--once");
     let show_menu = args.iter().any(|a| a == "--menu");
     let record = arg_value(&args, "--record");
@@ -2112,7 +2125,8 @@ fn main() -> io::Result<()> {
             }
             if event::poll(Duration::from_millis(33))? {
                 if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
+                    // The reports page moves its own selection and scroll (↑ ↓ PgUp PgDn Enter Esc …).
+                    if k.kind == KeyEventKind::Press && !(menu.is_none() && page == Page::Reports && reports::key(k.code)) {
                         match (k.code, menu) {
                             (KeyCode::Char('q' | 'Q'), _) => return Ok(()),
                             (KeyCode::Char('m' | 'M'), None) => menu = Some(page.index()),

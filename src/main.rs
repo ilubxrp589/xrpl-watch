@@ -43,6 +43,7 @@ use ratatui::{Frame, Terminal};
 use serde_json::{json, Value};
 
 mod independence;
+mod receipts;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Palette: HALCYON synthwave (24-bit), or the 16 terminal colours with --basic
@@ -216,6 +217,8 @@ struct Snap {
     amendments: Vec<(String, i64, bool)>, // (name, seconds to activation, supported upstream)
     /// The INDEPENDENCE page's slower sources.
     ind: independence::Ind,
+    /// The RECEIPTS page: every log of differences, this run.
+    rec: receipts::Rec,
     at: Option<SystemTime>,
 }
 
@@ -526,6 +529,7 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
     let mut receipts_sig: Option<(u64, SystemTime)> = None;
     let mut receipts_at: Option<Instant> = None;
     let mut ind_at: Option<Instant> = None;
+    let mut rec_at: Option<Instant> = None;
     loop {
         let t0 = Instant::now();
         let mut sn = Snap::default();
@@ -573,6 +577,16 @@ fn collect(cfg: Arc<Cfg>, shared: Arc<Mutex<Shared>>, frames_left: Option<Arc<Mu
         }
         let led = u(&sn.eng, &["native_shadow", "ledgers"]);
         let run_start = u(&sn.eng, &["ledger_seq"]).saturating_sub(led + 2);
+        // The RECEIPTS page, every 5 s: its run starts before the mirror's first ledger, at the ledgers it waited
+        // through while hydrating (the writer's `unready`).
+        let prev_rec = prev.as_ref().map(|p| p.rec.clone()).unwrap_or_default();
+        if rec_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+            let first = run_start.saturating_sub(u(&sn.eng, &["native_shadow", "writer", "unready"]));
+            sn.rec = receipts::read(&cfg, vproc.as_ref(), &prev_rec, first);
+            rec_at = Some(Instant::now());
+        } else {
+            sn.rec = prev_rec;
+        }
         let sig = fs::metadata(&cfg.receipts).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
         let stale = receipts_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(30));
         if sig != receipts_sig || stale || prev.is_none() {
@@ -990,11 +1004,32 @@ fn problems(sn: &Snap) -> Vec<String> {
 enum Page {
     Main,
     Independence,
+    Receipts,
+}
+
+impl Page {
+    fn from_arg(a: Option<&str>) -> Page {
+        match a {
+            Some("independence") => Page::Independence,
+            Some("receipts") => Page::Receipts,
+            _ => Page::Main,
+        }
+    }
+    /// Tab's order.
+    fn next(self) -> Page {
+        match self {
+            Page::Main => Page::Independence,
+            Page::Independence => Page::Receipts,
+            Page::Receipts => Page::Main,
+        }
+    }
 }
 
 fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
-    if page == Page::Independence {
-        return independence::draw(f, g, paused);
+    match page {
+        Page::Independence => return independence::draw(f, g, paused),
+        Page::Receipts => return receipts::draw(f, g, paused),
+        Page::Main => {}
     }
     let p = pal();
     let area = f.area();
@@ -1754,7 +1789,7 @@ fn draw_ledger_mix(f: &mut Frame, r: Rect, sn: &Snap) {
 
 fn draw_footer(f: &mut Frame, r: Rect, sn: &Snap, paused: bool) {
     let p = pal();
-    let mut v = vec![dim(" q quit · p pause · i independence · 1 main · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
+    let mut v = vec![dim(" q quit · p pause · 1 main · i independence · r receipts · Tab next · real time: ~30 fps, the validator read 4× a second · counts since the validator started · xrpl-watch")];
     if paused {
         v.push(bold("   ⏸ PAUSED", p.warn));
     }
@@ -1864,7 +1899,7 @@ fn main() -> io::Result<()> {
         tweens: BTreeMap::new(),
     }));
 
-    let mut page = if arg_value(&args, "--page").as_deref() == Some("independence") { Page::Independence } else { Page::Main };
+    let mut page = Page::from_arg(arg_value(&args, "--page").as_deref());
     let once = args.iter().any(|a| a == "--once");
     let record = arg_value(&args, "--record");
     if once || record.is_some() {
@@ -1943,8 +1978,9 @@ fn main() -> io::Result<()> {
                             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                             KeyCode::Char('p') => paused = !paused,
                             KeyCode::Char('i') => page = Page::Independence,
+                            KeyCode::Char('r') => page = Page::Receipts,
                             KeyCode::Char('1') => page = Page::Main,
-                            KeyCode::Tab => page = if page == Page::Main { Page::Independence } else { Page::Main },
+                            KeyCode::Tab => page = page.next(),
                             _ => {}
                         }
                     }

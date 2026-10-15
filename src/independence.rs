@@ -238,13 +238,21 @@ fn steps(sn: &Snap) -> Vec<Step> {
                 ],
             ));
             lines.push(kv("passes", vec![ink(commas(u(no, &["retried"]))), dim(format!(" applied after pass 1 · {} attempts", commas(u(no, &["attempts"]))))]));
+            // Cycle 174: the order's seed is the set a quorum of trusted validators accepted; the ledger's own root
+            // stands in only before a quorum has named one.
+            if no.get("salt_agreed").is_some() {
+                lines.push(kv(
+                    "seed",
+                    vec![ink(commas(u(no, &["salt_agreed"]))), dim(" agreed set · "), ink(commas(u(no, &["salt_own"]))), dim(" own root (no quorum yet)")],
+                ));
+            }
             lines.push(kv("receipts", vec![zero_good(logs("native_order").unwrap_or(0) as u64), dim(" lines in native_order.jsonl")]));
         } else if no.is_null() {
             lines.push(kv("build", vec![bold("not in this build", p.warn), dim(" (cycle 173)")]));
         } else {
             lines.push(kv("switch", vec![bold("XRPL_NATIVE_ORDER off", p.warn)]));
         }
-        lines.push(note("rippled's canonical order + 3 retry passes, from the set alone"));
+        lines.push(note("rippled's order (seed: the agreed set) + 3 retry passes"));
         let hero = matches!(st, St::Shadow | St::Live).then(|| (u(no, &["exact"]), "ledgers built exactly as mainnet did".to_string(), p.feed));
         out.push(Step { n: 3, name: "OUR OWN ORDER AND RESULTS", st, lines, hero });
     }
@@ -258,7 +266,7 @@ fn steps(sn: &Snap) -> Vec<Step> {
             lines.push(kv("fetched", vec![bold(commas(u(pf, &["fetched"])), p.feed), dim(format!(" proven to the ledger hash · {} peers", u(pf, &["peers"])))]));
             lines.push(kv(
                 "vs .39",
-                vec![bold(commas(u(pf, &["matched"])), p.good), dim(" the same byte for byte · "), zero_good(u(pf, &["differ"])), dim(" differ · "), zero_good(u(pf, &["failed"])), dim(" failed")],
+                vec![bold(commas(u(pf, &["matched"])), p.good), dim(" identical · "), zero_good(u(pf, &["differ"])), dim(" differ · "), zero_good(u(pf, &["failed"])), dim(" failed")],
             ));
             let per = if u(pf, &["fetched"]) > 0 { u(pf, &["requests"]) as f64 / u(pf, &["fetched"]) as f64 } else { 0.0 };
             lines.push(kv("requests", vec![ink(commas(u(pf, &["requests"]))), dim(format!(" · {per:.1} a ledger · {} skipped", commas(u(pf, &["skipped"]))))]));
@@ -276,7 +284,7 @@ fn steps(sn: &Snap) -> Vec<Step> {
                 "validated",
                 vec![
                     bold(commas(u(ov, &["agree"])), p.good),
-                    dim(" ours = .39's · "),
+                    dim(" = .39's · "),
                     zero_good(u(ov, &["differ"])),
                     dim(" differ · "),
                     zero_good(u(ov, &["short"])),
@@ -314,15 +322,15 @@ fn steps(sn: &Snap) -> Vec<Step> {
                 "own hash",
                 vec![
                     bold(commas(u(oh, &["own"])), p.good),
-                    dim(" = the network's · "),
+                    dim(" = network · "),
                     zero_good(u(oh, &["differ"])),
-                    dim(format!(" differ · {} partial · {} in a row", commas(u(oh, &["partial"])), commas(u(oh, &["streak"])))),
+                    dim(format!(" differ · {} in a row", commas(u(oh, &["streak"])))),
                 ],
             ));
-            let borrowed: Vec<String> = ["state", "transactions", "order", "total", "parent", "times"]
+            let borrowed: Vec<String> = [("state", "state"), ("transactions", "txs"), ("order", "order"), ("total", "total"), ("parent", "parent"), ("times", "times")]
                 .into_iter()
-                .filter(|k| u(oh, &["borrowed", k]) > 0)
-                .map(|k| format!("{k} {}", commas(u(oh, &["borrowed", k]))))
+                .filter(|(k, _)| u(oh, &["borrowed", k]) > 0)
+                .map(|(k, w)| format!("{w} {}", commas(u(oh, &["borrowed", k]))))
                 .collect();
             if !borrowed.is_empty() {
                 lines.push(kv("borrowed", vec![dim(borrowed.join(" · "))]));

@@ -66,6 +66,10 @@ fn cut(t: &str, w: usize) -> String {
     if t.chars().count() <= w { t.to_string() } else { format!("{}…", t.chars().take(w.saturating_sub(1)).collect::<String>()) }
 }
 
+fn receipts(n: u64) -> String {
+    if n == 1 { "1 receipt".to_string() } else { format!("{n} receipts") }
+}
+
 fn since(ts: &Value) -> String {
     ts.as_f64().map(|t| format!(" ({} ago)", ago((now_s() - t).max(0.0) as u64))).unwrap_or_default()
 }
@@ -133,7 +137,7 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         let mut prog = vec![sp("█".repeat(fill), p.feed), sp("·".repeat(bw - fill.min(bw)), p.dim)];
         if let Some(vd) = soak["verdict"].as_object() {
             let clean = vd.get("clean").and_then(|c| c.as_bool()).unwrap_or(false);
-            prog.push(bold(if clean { " ✓ CLEAN".to_string() } else { format!(" ✗ {} receipts", vd.get("receipts").and_then(|r| r.as_u64()).unwrap_or(0)) }, if clean { p.good } else { p.bad }));
+            prog.push(bold(if clean { " ✓ CLEAN".to_string() } else { format!(" ✗ {}", receipts(vd.get("receipts").and_then(|r| r.as_u64()).unwrap_or(0))) }, if clean { p.good } else { p.bad }));
         } else {
             prog.push(bold(format!(" {:.1} of {hours} h", (now - st).max(0.0) / 3600.0), p.feed));
             prog.push(dim(format!(" · {} to go", ago((en - now).max(0.0) as u64))));
@@ -232,8 +236,9 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         let check = if h["match"].is_null() { "—".to_string() } else { format!("{}/{} · {} signed", u(h, &["match"]), mm, u(h, &["signed"])) };
         let (end, c) = match h["verdict"].as_object() {
             Some(vd) if vd.get("clean").and_then(|x| x.as_bool()) == Some(true) => ("✓ clean, no receipts".to_string(), p.good),
-            Some(vd) if vd.get("clean").and_then(|x| x.as_bool()) == Some(false) => (format!("✗ {} receipts", vd.get("receipts").and_then(|x| x.as_u64()).unwrap_or(0)), p.bad),
+            Some(vd) if vd.get("clean").and_then(|x| x.as_bool()) == Some(false) => (format!("✗ {}", receipts(vd.get("receipts").and_then(|x| x.as_u64()).unwrap_or(0))), p.bad),
             _ if i == 0 => ("running".to_string(), p.feed),
+            _ if h["ran_h"].as_f64().unwrap_or(0.0) >= 24.0 => ("ran its day · no verdict recorded".to_string(), p.dim),
             _ => ("cut short by the next deploy".to_string(), p.dim),
         };
         lines.push(Line::from(vec![

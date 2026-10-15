@@ -228,7 +228,12 @@ fn draw_feed39(f: &mut Frame, r: Rect, sn: &Snap, bw: usize) {
             Some("/") => "system SSD".to_string(),
             _ => s(d, &["dev"]).to_string(),
         };
-        let c = level(used, 60.0, 80.0);
+        // Coloured by the time it has left where the reading gives one (amber under six months, red under three).
+        let c = match d["months_left_estimate"].as_f64() {
+            Some(m) if m < 3.0 => p.bad,
+            Some(m) if m < 6.0 => p.warn,
+            _ => level(used, 60.0, 80.0),
+        };
         let mut l = meter(used / 100.0, bw.saturating_sub(12).max(8), c);
         l.push(bold(format!(" {used:.0}% worn"), c));
         let mut tail = String::new();

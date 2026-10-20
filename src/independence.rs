@@ -337,8 +337,19 @@ fn steps(sn: &Snap) -> Vec<Step> {
             }
             lines.push(kv("receipts", vec![zero_good(logs("own_hash").unwrap_or(0) as u64), dim(" lines in own_hash.jsonl")]));
         }
-        lines.push(kv("signing", vec![ink("the network's hash"), dim(format!(" · {} in a row", commas(u(&sn.sh, &["consecutive_matches"]))))]));
-        lines.push(note("next: sign our own hash when it equals the UNL's"));
+        // 5a (cycle 185): the validator signs only its own hash of a ledger, once the quorum names it too.
+        let sg = get(e, &["signing"]);
+        if b(sg, &["own_only"]) {
+            let mut v = vec![bold("our own hash", p.good), dim(format!(" · {} of {} signed", commas(u(sg, &["own"])), commas(u(sg, &["signed"]))))];
+            if b(sg, &["breaker"]) {
+                v.push(bold(" · breaker ON", p.warn));
+            }
+            lines.push(kv("signing", v));
+            lines.push(note("5a live: ours, once the quorum names it too · next: 5b, sign on compute"));
+        } else {
+            lines.push(kv("signing", vec![ink("the network's hash"), dim(format!(" · {} in a row", commas(u(&sn.sh, &["consecutive_matches"]))))]));
+            lines.push(note("next: sign our own hash when it equals the UNL's"));
+        }
         let hero = if own {
             Some((u(oh, &["own"]), "ledgers whose own hash = the network's".to_string(), p.violet))
         } else {
@@ -383,12 +394,24 @@ fn draw_road(f: &mut Frame, r: Rect, st: &[Step], sn: &Snap) {
     track.push(bold("★", p.gold));
     names.push(bold(" INDEPENDENT", p.gold));
     states.push(dim("   the goal"));
-    let days = 0;
-    let goal = Line::from(vec![
+    // The validator keeps the count (/api/engine "independence"): the run of days that signed only our own hash.
+    let ind = &sn.eng["independence"];
+    let days = u(ind, &["days"]);
+    let sg = &sn.eng["signing"];
+    let today = if b(sg, &["own_only"]) {
+        format!(" · today: our own hash ({} of {} signed)", commas(u(sg, &["own"])), commas(u(sg, &["signed"])))
+    } else {
+        format!(" · today: the network's hash, after 3 matches ({} in a row)", commas(u(&sn.sh, &["consecutive_matches"])))
+    };
+    let mut goal = vec![
         dim(" Done = 30 days signing a hash we computed ourselves, from peer data: "),
         bold(format!("{days} of 30 days"), p.gold),
-        dim(format!(" · today: the network's hash, after 3 matches ({} in a row)", commas(u(&sn.sh, &["consecutive_matches"])))),
-    ]);
+        dim(today),
+    ];
+    if let Some(why) = ind["today"]["misses"].as_array().and_then(|m| m.first()).and_then(|m| m.as_str()) {
+        goal.push(dim(format!(" · not counting yet: {why}")));
+    }
+    let goal = Line::from(goal);
     f.render_widget(Paragraph::new(vec![Line::from(track), Line::from(names), Line::from(states), goal]), inner);
 }
 

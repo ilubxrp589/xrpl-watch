@@ -1182,6 +1182,14 @@ fn draw(f: &mut Frame, g: &Shared, paused: bool, page: Page) {
     draw_footer(f, rows[7], &g.snap, paused);
 }
 
+/// When the screen was paused (key p), or None. Every page's header says so in the badge's place, and "next ledger"
+/// stops counting at that moment: a frozen screen with a running clock looked like a validator that stopped signing.
+static PAUSED_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+fn paused_at() -> Option<Instant> {
+    *PAUSED_AT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn draw_header(f: &mut Frame, r: Rect, sn: &Snap) {
     let p = pal();
     let w = writer_mode(sn);
@@ -1194,6 +1202,11 @@ fn draw_header(f: &mut Frame, r: Rect, sn: &Snap) {
         Span::styled(format!(" ✓ ALL GOOD · signing · {} in a row ", commas(consec)), Style::new().fg(p.bg).bg(p.feed).add_modifier(Modifier::BOLD))
     } else {
         Span::styled(" … warming up — verifying before signing ".to_string(), Style::new().fg(p.bg).bg(p.warn).add_modifier(Modifier::BOLD))
+    };
+    let verdict = if paused_at().is_some() {
+        Span::styled(" ⏸ PAUSED — this screen is frozen · press p to resume ", Style::new().fg(p.bg).bg(p.warn).add_modifier(Modifier::BOLD))
+    } else {
+        verdict
     };
     let stage = match w {
         Writer::RustWriting => Span::styled(" ★ STAGE 4 · RUST ENGINE WRITES THE LEDGER ", Style::new().fg(p.bg).bg(p.rust).add_modifier(Modifier::BOLD)),
@@ -1428,7 +1441,8 @@ fn pulse_lines(g: &Shared, width: usize, cadence: f64) -> [Line<'static>; 2] {
 fn next_ledger_line(g: &Shared, width: usize, cadence: f64) -> Line<'static> {
     let p = pal();
     let Some(last) = g.closes.back() else { return Line::from(dim("next ledger …")) };
-    let since = last.elapsed().as_secs_f64();
+    let paused = paused_at();
+    let since = paused.unwrap_or_else(Instant::now).saturating_duration_since(*last).as_secs_f64();
     let frac = since / cadence;
     let bw = width.saturating_sub(20).max(4);
     let eighths = ((frac.min(1.0)) * (bw * 8) as f64).round() as usize;
@@ -1442,6 +1456,7 @@ fn next_ledger_line(g: &Shared, width: usize, cadence: f64) -> Line<'static> {
         Span::styled(bar, Style::new().fg(col)),
         Span::styled("·".repeat(bw.saturating_sub(filled)), Style::new().fg(blend(p.dim, p.bg, 0.5))),
         Span::styled(format!(" {since:>4.1}s"), Style::new().fg(col)),
+        dim(if paused.is_some() { " paused" } else { "" }),
     ])
 }
 
@@ -2162,7 +2177,10 @@ fn main() -> io::Result<()> {
                             (KeyCode::Char('m' | 'M'), None) => menu = Some(page.index()),
                             (KeyCode::Char('m' | 'M') | KeyCode::Esc, Some(_)) => menu = None,
                             (KeyCode::Esc, None) => return Ok(()),
-                            (KeyCode::Char('p' | 'P'), _) => paused = !paused,
+                            (KeyCode::Char('p' | 'P'), _) => {
+                                paused = !paused;
+                                *PAUSED_AT.lock().unwrap_or_else(|e| e.into_inner()) = paused.then(Instant::now);
+                            }
                             (KeyCode::Up, Some(sel)) => menu = Some((sel + PAGES.len() - 1) % PAGES.len()),
                             (KeyCode::Down, Some(sel)) => menu = Some((sel + 1) % PAGES.len()),
                             (KeyCode::Enter, Some(sel)) => {

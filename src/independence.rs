@@ -210,9 +210,18 @@ fn steps(sn: &Snap) -> Vec<Step> {
         } else {
             lines.push(kv("switch", vec![bold("XRPL_NATIVE_META off", p.warn)]));
         }
-        lines.push(note("our metadata for every tx, byte for byte, and its tree"));
+        // Live once the validator signs only its own hash (5a): that hash's transaction tree is built from these
+        // records, and a ledger with one record of ours wrong goes unsigned.
+        let live = enabled && b(get(e, &["signing"]), &["own_only"]);
+        if live {
+            lines.push(kv("signing", vec![bold("our records", p.good), dim(" build the tree in every hash we sign")]));
+            lines.push(note("one record of ours wrong = that ledger unsigned"));
+        } else {
+            lines.push(note("our metadata for every tx, byte for byte, and its tree"));
+        }
         let hero = enabled.then(|| (u(nm, &["exact"]), "of our own records byte-exact".to_string(), p.feed));
-        out.push(Step { n: 2, name: "OUR OWN TRANSACTION RECORDS", st: if enabled { St::Shadow } else { St::Built }, lines, hero });
+        let st = if live { St::Live } else if enabled { St::Shadow } else { St::Built };
+        out.push(Step { n: 2, name: "OUR OWN TRANSACTION RECORDS", st, lines, hero });
     }
 
     // 3 · our own order and results
@@ -261,45 +270,72 @@ fn steps(sn: &Snap) -> Vec<Step> {
     {
         let pf = get(e, &["peer_fetch"]);
         let enabled = b(pf, &["enabled"]);
+        // 4.3: XRPL_LEDGER_SOURCE=peers. Every ledger comes from peers, proven to the hash the trusted validators
+        // reached quorum on, and no call reaches the upstream: there is nothing of its to match against.
+        let ls = get(e, &["ledger_source"]);
+        let peers = s(ls, &["mode"]) == "peers";
         let mut lines = Vec::new();
-        if enabled {
-            lines.push(kv("fetched", vec![bold(commas(u(pf, &["fetched"])), p.feed), dim(format!(" proven to the ledger hash · {} peers", u(pf, &["peers"])))]));
+        if peers {
+            lines.push(kv("source", vec![bold("peers", p.good), dim(" · each ledger proven to the quorum's hash")]));
             lines.push(kv(
-                &format!("vs {}", up_name()),
-                vec![bold(commas(u(pf, &["matched"])), p.good), dim(" identical · "), zero_good(u(pf, &["differ"])), dim(" differ · "), zero_good(u(pf, &["failed"])), dim(" failed")],
-            ));
-            let per = if u(pf, &["fetched"]) > 0 { u(pf, &["requests"]) as f64 / u(pf, &["fetched"]) as f64 } else { 0.0 };
-            lines.push(kv("requests", vec![ink(commas(u(pf, &["requests"]))), dim(format!(" · {per:.1} a ledger · {} skipped", commas(u(pf, &["skipped"]))))]));
-            lines.push(kv("receipts", vec![zero_good(logs("peer_fetch").unwrap_or(0) as u64), dim(" lines in peer_fetch.jsonl")]));
-        } else if pf.is_null() {
-            lines.push(kv("build", vec![bold("not in this build", p.warn), dim(" (cycle 173)")]));
-        } else {
-            lines.push(kv("switch", vec![bold("XRPL_PEER_FETCH off", p.warn)]));
-        }
-        // 4.5: "validated" from our own count of trusted validations.
-        let ov = get(e, &["own_validated"]);
-        if b(ov, &["enabled"]) {
-            let lead = get(ov, &["lead_ms_median"]).as_i64();
-            lines.push(kv(
-                "validated",
+                "held",
                 vec![
-                    bold(commas(u(ov, &["agree"])), p.good),
-                    dim(format!(" = {}'s · ", up_name())),
-                    zero_good(u(ov, &["differ"])),
-                    dim(" differ · "),
-                    zero_good(u(ov, &["short"])),
-                    dim(" short"),
-                    dim(match lead {
-                        Some(ms) if ms >= 0 => format!(" · {ms} ms ahead"),
-                        Some(ms) => format!(" · {} ms behind", -ms),
-                        None => String::new(),
-                    }),
+                    zero_good(u(ls, &["holds"])),
+                    dim(format!(" · {} keyed fallbacks · {} chain walks", commas(u(ls, &["keyed_fallbacks"])), commas(u(ls, &["chain_walks"])))),
                 ],
             ));
+            lines.push(kv(&format!("{} RPC", up_name()), vec![bold("none", p.good), dim(format!(" · {} calls refused", commas(u(ls, &["rpc_refused"]))))]));
+            let w = get(e, &["witness"]);
+            if b(w, &["enabled"]) {
+                lines.push(kv(
+                    "witness",
+                    vec![ink(commas(u(w, &["agree"]))), dim(format!(" = {}'s · ", up_name())), zero_good(u(w, &["differ"])), dim(" differ · check only")],
+                ));
+            }
+            lines.push(kv("receipts", vec![zero_good(logs("peer_fetch").unwrap_or(0) as u64), dim(" lines in peer_fetch.jsonl")]));
+            lines.push(note(format!("{} is a witness only: its hashes are checked, never used", up_name())));
+            let hero = Some((u(ls, &["from_peers"]), "ledgers taken from peers".to_string(), p.good));
+            out.push(Step { n: 4, name: "LEDGERS FROM PEERS", st: St::Live, lines, hero });
+        } else {
+            if enabled {
+                lines.push(kv("fetched", vec![bold(commas(u(pf, &["fetched"])), p.feed), dim(format!(" proven to the ledger hash · {} peers", u(pf, &["peers"])))]));
+                lines.push(kv(
+                    &format!("vs {}", up_name()),
+                    vec![bold(commas(u(pf, &["matched"])), p.good), dim(" identical · "), zero_good(u(pf, &["differ"])), dim(" differ · "), zero_good(u(pf, &["failed"])), dim(" failed")],
+                ));
+                let per = if u(pf, &["fetched"]) > 0 { u(pf, &["requests"]) as f64 / u(pf, &["fetched"]) as f64 } else { 0.0 };
+                lines.push(kv("requests", vec![ink(commas(u(pf, &["requests"]))), dim(format!(" · {per:.1} a ledger · {} skipped", commas(u(pf, &["skipped"]))))]));
+                lines.push(kv("receipts", vec![zero_good(logs("peer_fetch").unwrap_or(0) as u64), dim(" lines in peer_fetch.jsonl")]));
+            } else if pf.is_null() {
+                lines.push(kv("build", vec![bold("not in this build", p.warn), dim(" (cycle 173)")]));
+            } else {
+                lines.push(kv("switch", vec![bold("XRPL_PEER_FETCH off", p.warn)]));
+            }
+            // 4.5: "validated" from our own count of trusted validations.
+            let ov = get(e, &["own_validated"]);
+            if b(ov, &["enabled"]) {
+                let lead = get(ov, &["lead_ms_median"]).as_i64();
+                lines.push(kv(
+                    "validated",
+                    vec![
+                        bold(commas(u(ov, &["agree"])), p.good),
+                        dim(format!(" = {}'s · ", up_name())),
+                        zero_good(u(ov, &["differ"])),
+                        dim(" differ · "),
+                        zero_good(u(ov, &["short"])),
+                        dim(" short"),
+                        dim(match lead {
+                            Some(ms) if ms >= 0 => format!(" · {ms} ms ahead"),
+                            Some(ms) => format!(" · {} ms behind", -ms),
+                            None => String::new(),
+                        }),
+                    ],
+                ));
+            }
+            lines.push(kv("source", vec![ink(up_name()), dim(" · peers are the witness until 4.3")]));
+            let hero = enabled.then(|| (u(pf, &["matched"]), format!("ledgers from peers, same as {}'s", up_name()), p.feed));
+            out.push(Step { n: 4, name: "LEDGERS FROM PEERS", st: if enabled { St::Shadow } else { St::Built }, lines, hero });
         }
-        lines.push(kv("source", vec![ink(up_name()), dim(" · peers are the witness until 4.3")]));
-        let hero = enabled.then(|| (u(pf, &["matched"]), format!("ledgers from peers, same as {}'s", up_name()), p.feed));
-        out.push(Step { n: 4, name: "LEDGERS FROM PEERS", st: if enabled { St::Shadow } else { St::Built }, lines, hero });
     }
 
     // 5 · build at the live edge, sign our own hash
@@ -463,13 +499,21 @@ fn draw_borrowed(f: &mut Frame, r: Rect, st: &[Step]) {
             sp(word, c),
         ])
     };
-    let lines = vec![
-        row("each ledger's transactions, their records and the header", &format!("the stock xrpld on {}", up_name()), 4),
-        row("the transaction records and the transaction tree", &format!("{}'s metadata", up_name()), 2),
-        row("the order the transactions apply in", &format!("{}'s position numbers", up_name()), 3),
-        row("the ledger hash it signs", "the network's announcement", 5),
-        row("libxrpl at build time", "the ffi feature", 6),
+    let all = [
+        ("each ledger's transactions, their records and the header", format!("the stock xrpld on {}", up_name()), 4, "ledgers"),
+        ("the transaction records and the transaction tree", format!("{}'s metadata", up_name()), 2, "records"),
+        ("the order the transactions apply in", format!("{}'s position numbers", up_name()), 3, "order"),
+        ("the ledger hash it signs", "the network's announcement".to_string(), 5, "hash"),
+        ("libxrpl at build time", "the ffi feature".to_string(), 6, "libxrpl"),
     ];
+    // A live step has ended its borrowing: it leaves the table for the line under it.
+    let mut lines: Vec<Line> = all.iter().filter(|r| state(r.2) != St::Live).map(|r| row(r.0, &r.1, r.2)).collect();
+    let mut ended: Vec<(u8, &str)> = all.iter().filter(|r| state(r.2) == St::Live).map(|r| (r.2, r.3)).collect();
+    ended.sort();
+    if !ended.is_empty() {
+        let names: Vec<String> = ended.iter().map(|(n, w)| format!("{w} (step {n})")).collect();
+        lines.push(Line::from(vec![Span::raw(" "), bold("✓ no longer borrowed: ", p.good), dim(names.join(" · "))]));
+    }
     let block = panel(vec![bold("STILL BORROWED", p.warn), dim(" · and the step that ends each")], p.warn);
     f.render_widget(Paragraph::new(lines).block(block), r);
 }

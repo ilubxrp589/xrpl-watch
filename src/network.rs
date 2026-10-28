@@ -130,9 +130,18 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
         lines.push(kv("error", vec![sp(e.chars().take(60).collect::<String>(), p.bad)]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(dim(format!(" Today every ledger the validator processes comes from {}. Step 4 checks each one against our peers;", up_name()))));
-    lines.push(Line::from(dim(" step 4.3 makes the peers the source.")));
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE UPSTREAM", p.cpp), dim(" · the stock server we still take ledgers from")], p.cpp)), top[1]);
+    // 4.3: with XRPL_LEDGER_SOURCE=peers the validator takes nothing from the upstream; at most it checks against it.
+    let peers = s(&sn.eng["ledger_source"], &["mode"]) == "peers";
+    let title = if peers {
+        lines.push(Line::from(dim(format!(" Every ledger the validator processes comes from our peers. {} is a witness only:", up_name()))));
+        lines.push(Line::from(dim(" its hashes are checked, never used.")));
+        " · the stock server, a witness only"
+    } else {
+        lines.push(Line::from(dim(format!(" Today every ledger the validator processes comes from {}. Step 4 checks each one against our peers;", up_name()))));
+        lines.push(Line::from(dim(" step 4.3 makes the peers the source.")));
+        " · the stock server we still take ledgers from"
+    };
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("THE UPSTREAM", p.cpp), dim(title)], p.cpp)), top[1]);
 
     // Consensus.
     let c = &sn.cons;
@@ -150,15 +159,26 @@ pub fn draw(f: &mut Frame, g: &Shared, paused: bool) {
     let ov = &sn.eng["own_validated"];
     let pf = &sn.eng["peer_fetch"];
     let fetched = u(pf, &["fetched"]).max(1);
-    let lines = vec![
-        kv("validations", vec![ink(commas(u(ov, &["validations"]))), dim(" heard · "), ink(commas(u(ov, &["untrusted"]))), dim(" from servers not on our list")]),
-        kv("our quorum", vec![bold(commas(u(ov, &["agree"])), p.good), dim(format!(" ledgers called validated as {} did · quorum {} of {}", up_name(), u(ov, &["quorum"]), u(ov, &["unl"])))]),
-        kv("", vec![dim("differ "), bold(commas(u(ov, &["differ"])), if u(ov, &["differ"]) == 0 { p.good } else { p.bad }), dim(" · short "), bold(commas(u(ov, &["short"])), if u(ov, &["short"]) == 0 { p.good } else { p.bad })]),
-        Line::from(""),
-        kv("peer ledgers", vec![bold(commas(u(pf, &["matched"])), p.good), dim(format!(" of {} fetched from peers matched {}'s", commas(u(pf, &["fetched"])), up_name()))]),
-        kv("", vec![dim(format!("{:.1} requests a ledger · {} peers to ask · {} ms for the last", u(pf, &["requests"]) as f64 / fetched as f64, u(pf, &["peers"]), u(pf, &["ms_last"])))]),
-    ];
-    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("VALIDATIONS · PEER LEDGERS", p.gold), dim(" · step 4, in shadow")], p.gold)), low[1]);
+    let ls = &sn.eng["ledger_source"];
+    let mut lines = vec![kv("validations", vec![ink(commas(u(ov, &["validations"]))), dim(" heard · "), ink(commas(u(ov, &["untrusted"]))), dim(" from servers not on our list")])];
+    if peers {
+        // Nothing of the upstream's to hold our quorum or the peers' ledgers against: what the peers gave, and how.
+        let w = &sn.eng["witness"];
+        lines.push(kv("our quorum", vec![ink(format!("{} of {}", u(ov, &["quorum"]), u(ov, &["unl"]))), dim(" trusted validators name each ledger we take")]));
+        lines.push(Line::from(""));
+        lines.push(kv("peer ledgers", vec![bold(commas(u(ls, &["from_peers"])), p.good), dim(" taken from peers · held "), bold(commas(u(ls, &["holds"])), if u(ls, &["holds"]) == 0 { p.good } else { p.bad })]));
+        if b(w, &["enabled"]) {
+            lines.push(kv("witness", vec![ink(commas(u(w, &["agree"]))), dim(format!(" = {}'s · ", up_name())), bold(commas(u(w, &["differ"])), if u(w, &["differ"]) == 0 { p.good } else { p.bad }), dim(" differ · check only")]));
+        }
+    } else {
+        lines.push(kv("our quorum", vec![bold(commas(u(ov, &["agree"])), p.good), dim(format!(" ledgers called validated as {} did · quorum {} of {}", up_name(), u(ov, &["quorum"]), u(ov, &["unl"])))]));
+        lines.push(kv("", vec![dim("differ "), bold(commas(u(ov, &["differ"])), if u(ov, &["differ"]) == 0 { p.good } else { p.bad }), dim(" · short "), bold(commas(u(ov, &["short"])), if u(ov, &["short"]) == 0 { p.good } else { p.bad })]));
+        lines.push(Line::from(""));
+        lines.push(kv("peer ledgers", vec![bold(commas(u(pf, &["matched"])), p.good), dim(format!(" of {} fetched from peers matched {}'s", commas(u(pf, &["fetched"])), up_name()))]));
+    }
+    lines.push(kv("", vec![dim(format!("{:.1} requests a ledger · {} peers to ask · {} ms for the last", u(pf, &["requests"]) as f64 / fetched as f64, u(pf, &["peers"]), u(pf, &["ms_last"])))]));
+    let title = if peers { " · step 4, live: the source" } else { " · step 4, in shadow" };
+    f.render_widget(Paragraph::new(lines).block(panel(vec![bold("VALIDATIONS · PEER LEDGERS", p.gold), dim(title)], p.gold)), low[1]);
     draw_world(f, rows[3], sn, bw);
     draw_footer(f, rows[4], sn, paused);
 }
